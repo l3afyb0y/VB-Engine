@@ -1,0 +1,9 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Type=Application
+Name=VB Engine Piano Tester
+Comment=Click-to-play A2-C5 piano tester for VB-Engine (HQ profile, MIDI + pedal + advanced settings window)
+Exec=env VB_TESTER_PEDAL_NOISE=0 /home/rowen/github-branches/VB-Engine/scripts/run-piano-tester.sh
+Terminal=false
+Categories=Audio;Music;
+Path=/home/rowen/github-branches/VB-Engine

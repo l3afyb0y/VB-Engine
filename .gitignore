@@ -1,0 +1,36 @@
+# Build output
+/build/
+/cmake-build-*/
+
+# CMake/Ninja generated metadata
+/CMakeCache.txt
+/CMakeFiles/
+/compile_commands.json
+/Testing/
+/install_manifest.txt
+
+# Crash dumps / sanitizer artifacts
+core
+core.*
+vgcore.*
+*.asan.*
+*.ubsan.*
+*.tsan.*
+
+# Editor/OS noise
+*~
+*.swp
+*.swo
+.DS_Store
+
+# Python and misc temp
+__pycache__/
+*.pyc
+
+# Local heavy asset payloads (not needed in VCS)
+/Samples/Piano-Library/downloads/
+/Samples/Piano-Library/libraries/
+/Samples/Piano-Library/default.sfz
+
+# Local development scratch area
+/dev/
