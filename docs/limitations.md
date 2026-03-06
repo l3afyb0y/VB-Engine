@@ -1,7 +1,7 @@
 # Current Limitations and Future Work
 
 ## 1. Piano Realism Boundaries
-- The engine is a hybrid sampled + modeled design, not a full finite-element piano simulation.
+- The default path is a hybrid sampled + modeled design.
 - Real-string nonlinear interactions are approximated (not exact hammer/string PDE solving).
 - Stereo image realism depends heavily on the quality and perspective of the loaded SFZ library.
 
@@ -19,6 +19,7 @@
 ## 4. Performance Scope
 - Realtime path is optimized, but very high sample rates + high polyphony + dense convolution can still raise CPU.
 - Large sample libraries can increase startup/load time depending on disk speed.
+- GPU FEM backend selection is wired in the API, but production-grade GPU kernels are not enabled in this pass; requests currently fall back safely to CPU hybrid.
 
 ## 5. Platform Coverage
 - Primary tested target is Linux.

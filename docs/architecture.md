@@ -14,8 +14,9 @@ Core design goals:
 2. Audio callback calls `vb_engine_process(...)`.
 3. Engine drains SPSC queue and applies events to `VoicePool`.
 4. `VoicePool` renders active voices + mechanics + resonance.
-5. `PianoPostProcessor` performs body/room/tone/output shaping.
-6. Engine writes interleaved frame output per requested channel layout.
+5. Optional FEM body layer (backend-selected) contributes additional soundboard/body energy.
+6. `PianoPostProcessor` performs body/room/tone/output shaping.
+7. Engine writes interleaved frame output per requested channel layout.
 
 ## 3. Realtime Model
 Audio-thread invariants:
@@ -67,6 +68,11 @@ Control-thread responsibilities:
 - String-coupled sympathetic resonance model.
 - Inharmonicity-aware feedback/damping behavior.
 - Soundboard/bridge/body coupling with pedal-dependent behavior.
+
+### `src/instruments/piano/fem_string_body_model.*`
+- Finite-difference string/body grid model used by the FEM backend path.
+- Backend routing supports `AUTO`, `CPU_HYBRID`, `GPU_FEM` selection semantics.
+- Realtime-safe fallback to CPU hybrid when GPU FEM path is unavailable.
 
 ### `src/instruments/piano/post_processor.*`
 - Body + room convolution-style processing.
@@ -121,7 +127,7 @@ Primary quality/performance knobs:
    - `vb_engine_soak_tests`,
    - `asan-ubsan`,
    - sample generation + wav health.
-3. Update docs under `docs/instruments/` and `docs/performance/`.
+3. Update docs under `docs/instruments/` and the relevant durable docs in `docs/`.
 
 ## 9. Source Layout
 - `include/`: public API headers.

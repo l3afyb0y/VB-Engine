@@ -50,6 +50,9 @@ void init_engine(void) {
     cfg.piano_reverb_wet = 0.08f;
     cfg.piano_mic_mix = 0.28f;
     cfg.piano_presence = 0.56f;
+    cfg.piano_render_backend = VB_PIANO_RENDER_BACKEND_AUTO;
+    cfg.piano_fem_mix = 0.26f;
+    cfg.piano_fem_brightness = 0.54f;
     vb_engine_create(&cfg, &g_engine);
 }
 
@@ -102,11 +105,21 @@ For binary pedals, keep threshold at default 64 or set `piano_pedal_binary_thres
 - worst stolen activity,
 - max output delta,
 - hard jump count,
-- non-finite output sample count.
+- non-finite output sample count,
+- active render backend,
+- GPU fallback block count.
 
 Use `vb_engine_reset_diagnostics(...)` between profiling runs.
 
-## 8. Pre-Ship Checklist for Host Apps
+## 8. Backend Selection
+`cfg.piano_render_backend`:
+- `VB_PIANO_RENDER_BACKEND_AUTO`: choose best available backend (recommended).
+- `VB_PIANO_RENDER_BACKEND_CPU_HYBRID`: force existing CPU hybrid path.
+- `VB_PIANO_RENDER_BACKEND_GPU_FEM`: request FEM path with automatic fallback if unavailable.
+
+`cfg.piano_fem_mix` and `cfg.piano_fem_brightness` control FEM body contribution when that backend is active.
+
+## 9. Pre-Ship Checklist for Host Apps
 1. Run unit tests in VB-Engine repo.
 2. Run soak tests with your target block size/rate.
 3. Validate no clipping/jump artifacts on your MIDI workloads.

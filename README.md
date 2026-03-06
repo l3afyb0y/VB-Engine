@@ -1,6 +1,6 @@
 # VB-Engine
 
-Vibe Based Engine (VBE) is a sound engine made from the ground up, written in C++(20). It is designed to take MIDI inputs and output high-quality audio as a variety of instruments. (Only Acoustic Grand Piano is currently implemented, but more instruments are planned).
+Vibe Based Engine (VBE) is a sound engine made from the ground up, written in C++(20). It is designed to take MIDI inputs and output high-quality audio as a variety of instruments (Only Acoustic Grand Piano is currently implemented, but more instruments are planned).
 
 This program was made with the intention of implementation within my other project found here: https://github.com/l3afyb0y/Piano-Midi-Player
 
@@ -44,6 +44,10 @@ Notes:
 - The core engine now requires an explicit `piano_sfz_path` if you want sampled playback from host code.
 - The sample generator and live tester still fall back to `Samples/Piano-Library/default.sfz` when present.
 - Current loader supports SFZ regions referencing WAV/AIFF/FLAC samples.
+- Render backend selection is exposed via C API:
+  - `VB_PIANO_RENDER_BACKEND_AUTO`
+  - `VB_PIANO_RENDER_BACKEND_CPU_HYBRID`
+  - `VB_PIANO_RENDER_BACKEND_GPU_FEM` (falls back safely if unavailable)
 - Demo showcase generation now includes slight deterministic micro-timing/velocity humanization to reduce rigid quantized feel.
 
 
@@ -120,30 +124,10 @@ bash scripts/install-linux.sh
 - Licensing/compliance guide: `docs/licensing-compliance.md`
 - Current known limits and improvement targets: `docs/limitations.md`
 - Compatibility matrix: `docs/compatibility-matrix.md`
-- Implementation plan: `docs/phased-implementation-plan.md`
-- Piano Player adapter contract: `docs/piano-player-adapter-spec.md`
 - Piano acoustics + replication doc: `docs/instruments/piano-acoustics-and-implementation.md`
 - Sampled piano implementation doc: `docs/instruments/piano-sampled-engine-implementation.md`
 - Instrument implementation standard: `docs/instrument-implementation-standard.md`
 - Packaging/install behavior: `docs/packaging-install.md`
-- Risk/tradeoff analysis: `docs/risks-tradeoffs.md`
-- Piano CPU optimization report: `docs/performance/2026-02-15-piano-cpu-optimization.md`
-- Piano voicing/sample refactor report: `docs/performance/2026-02-15-piano-voicing-sample-refactor.md`
-- Sampled realism pass report: `docs/performance/2026-02-15-piano-realism-pass-2.md`
-- Sampled piano refactor verification: `docs/performance/2026-02-15-sampled-piano-refactor.md`
-- Sampled refactor specification: `docs/plans/2026-02-15-sampled-piano-refactor-spec.md`
-- Realism iteration 2 spec: `docs/plans/2026-02-16-piano-realism-iteration-2-spec.md`
-- Realism iteration 2 verification: `docs/performance/2026-02-16-piano-realism-iteration-2.md`
-- Realism iteration 3 high-impact pass: `docs/performance/2026-02-16-piano-realism-iteration-3.md`
-- Realism iteration 4 bedroom-acoustic retune: `docs/performance/2026-02-16-piano-realism-iteration-4-bedroom.md`
-- Realism iteration 5 clarity/decay pass: `docs/performance/2026-02-16-piano-realism-iteration-5-clarity-decay.md`
-- Realism iteration 6 realtime stability pass: `docs/performance/2026-02-16-piano-realism-iteration-6-realtime-stability.md`
-- Realism iteration 7 low-register polyphony pass: `docs/performance/2026-02-16-piano-realism-iteration-7-low-register-polyphony.md`
-- Realism iteration 8 polyphony headroom pass: `docs/performance/2026-02-16-piano-realism-iteration-8-polyphony-headroom.md`
-- Realism iteration 9 waveform forensics pass: `docs/performance/2026-02-16-piano-realism-iteration-9-waveform-forensics.md`
-- Realism iteration 10 realtime de-crackle pass: `docs/performance/2026-02-16-piano-realism-iteration-10-realtime-declick.md`
-- Realtime crackle follow-up pass: `docs/performance/2026-02-17-piano-realtime-crackle-pass.md`
-- Realism iteration 11 physical-model pass: `docs/performance/2026-02-17-piano-realism-iteration-11-physical-model-pass.md`
 
 ## Status
 This is an iterative foundation intended for rapid integration into Piano Player first, then expansion toward plugin wrappers (CLAP/VST3/LV2/AU/AAX by tier).
