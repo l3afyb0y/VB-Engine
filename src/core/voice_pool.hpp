@@ -8,9 +8,11 @@
 #include <vector>
 
 #include "core/instrument_type.hpp"
+#include "core/piano_render_backend.hpp"
 #include "instruments/guitar/clean_electric_voice.hpp"
 #include "instruments/piano/acoustic_grand_voice.hpp"
 #include "instruments/piano/mechanics.hpp"
+#include "instruments/piano/fem_string_body_model.hpp"
 #include "instruments/piano/post_processor.hpp"
 #include "instruments/piano/resonance_matrix.hpp"
 #include "instruments/piano/sample_library.hpp"
@@ -39,11 +41,16 @@ struct PianoRenderOptions {
     PedalMode pedal_mode{PedalMode::Auto};
     std::uint8_t pedal_binary_threshold{64};
     bool pedal_noise_enabled{false};
+    PianoRenderBackend render_backend{PianoRenderBackend::Auto};
+    float fem_mix{0.26F};
+    float fem_brightness{0.54F};
 };
 
 struct VoicePoolDiagnostics {
     std::uint64_t voice_steals{0};
     float worst_stolen_activity{0.0F};
+    PianoRenderBackend active_render_backend{PianoRenderBackend::CpuHybrid};
+    std::uint64_t gpu_fallback_blocks{0};
 };
 
 struct StereoFrame {
@@ -110,6 +117,7 @@ private:
     PianoSampleLibrary sample_library_{};
     PianoMechanicsLayer mechanics_{};
     PianoResonanceMatrix resonance_{};
+    PianoFemStringBodyModel fem_model_{};
     PianoPostProcessor post_processor_left_{};
     PianoPostProcessor post_processor_right_{};
     std::mt19937 rng_{0xBADC0DEu};

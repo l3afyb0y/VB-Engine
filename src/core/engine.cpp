@@ -51,6 +51,9 @@ Engine::Engine(const EngineConfig& config)
               .pedal_mode = config.piano_pedal_mode,
               .pedal_binary_threshold = config.piano_pedal_binary_threshold,
               .pedal_noise_enabled = config.piano_pedal_noise_enabled,
+              .render_backend = config.piano_render_backend,
+              .fem_mix = config.piano_fem_mix,
+              .fem_brightness = config.piano_fem_brightness,
           }
       ) {
     enable_realtime_fp_mode();
@@ -135,6 +138,8 @@ EngineDiagnostics Engine::diagnostics() const noexcept {
         .max_output_delta = max_output_delta_,
         .hard_jump_events = hard_jump_events_,
         .non_finite_output_samples = non_finite_output_samples_,
+        .active_render_backend = voice_stats.active_render_backend,
+        .gpu_fallback_blocks = voice_stats.gpu_fallback_blocks,
     };
 }
 

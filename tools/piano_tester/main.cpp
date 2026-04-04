@@ -47,6 +47,8 @@ struct AudioState {
     std::atomic<float> output_gain_target{1.85F};
     float stereo_width_current{1.60F};
     float output_gain_current{1.85F};
+    float limiter_gain_current{1.0F};
+    float limiter_env_current{0.0F};
 };
 
 struct MidiSharedState {
@@ -89,6 +91,7 @@ enum class UiSlider : std::uint8_t {
     StretchStrength,
     PedalThreshold,
     PedalMode,
+    RenderBackend,
 };
 
 enum class EngineLoadState : std::uint8_t {
@@ -253,10 +256,16 @@ void audio_callback(void* userdata, Uint8* stream, int len) {
     int rendered = 0;
     float width_current = state->stereo_width_current;
     float gain_current = state->output_gain_current;
+    float limiter_gain_current = state->limiter_gain_current;
+    float limiter_env = state->limiter_env_current;
     const float width_target = std::clamp(state->stereo_width_target.load(std::memory_order_acquire), 0.50F, 2.00F);
     const float gain_target = std::clamp(state->output_gain_target.load(std::memory_order_acquire), 0.20F, 2.00F);
     const float width_step = (width_target - width_current) / static_cast<float>(std::max(1, frame_count));
     const float gain_step = (gain_target - gain_current) / static_cast<float>(std::max(1, frame_count));
+    constexpr float kLimiterCeiling = 0.84F;       // ~ -1.5 dBFS target ceiling.
+    constexpr float kLimiterAttack = 0.55F;        // Fast clamp on peaks.
+    constexpr float kLimiterRelease = 0.0009F;     // Slow recovery to avoid pumping.
+    constexpr float kOutputTrim = 0.92F;           // Keeps startup safely below clip.
     while (rendered < frame_count) {
         const std::uint32_t chunk = static_cast<std::uint32_t>(
             std::min<int>(frame_count - rendered, static_cast<int>(state->max_block_size))
@@ -286,8 +295,22 @@ void audio_callback(void* userdata, Uint8* stream, int len) {
                     const float y = 0.985F + (0.015F * std::tanh(excess * 18.0F));
                     return std::copysign(y, x);
                 };
-                const float out_l = soft_limit((mid + side) * gain_current);
-                const float out_r = soft_limit((mid - side) * gain_current);
+                float out_l = (mid + side) * gain_current * kOutputTrim;
+                float out_r = (mid - side) * gain_current * kOutputTrim;
+
+                const float abs_peak = std::max(std::abs(out_l), std::abs(out_r));
+                if (abs_peak > limiter_env) {
+                    limiter_env += kLimiterAttack * (abs_peak - limiter_env);
+                } else {
+                    limiter_env += kLimiterRelease * (abs_peak - limiter_env);
+                }
+                const float limiter_target = (limiter_env > kLimiterCeiling)
+                    ? (kLimiterCeiling / std::max(limiter_env, 1.0e-6F))
+                    : 1.0F;
+                limiter_gain_current += kLimiterAttack * (limiter_target - limiter_gain_current);
+
+                out_l = soft_limit(out_l * limiter_gain_current);
+                out_r = soft_limit(out_r * limiter_gain_current);
                 out[(rendered + static_cast<int>(i)) * 2] = out_l;
                 out[(rendered + static_cast<int>(i)) * 2 + 1] = out_r;
             }
@@ -298,6 +321,8 @@ void audio_callback(void* userdata, Uint8* stream, int len) {
 
     state->stereo_width_current = width_current;
     state->output_gain_current = gain_current;
+    state->limiter_gain_current = limiter_gain_current;
+    state->limiter_env_current = limiter_env;
 }
 
 void draw_filled_circle(SDL_Renderer* renderer, const int cx, const int cy, const int r) {
@@ -750,6 +775,8 @@ int main() {
     constexpr float kPedalThresholdMax = 127.0F;
     constexpr float kPedalModeMin = 0.0F;
     constexpr float kPedalModeMax = 2.0F;
+    constexpr float kRenderBackendMin = 0.0F;
+    constexpr float kRenderBackendMax = 2.0F;
     constexpr float kNaturalImagePost = 1.40F;
     constexpr float kNaturalGainPost = 1.72F;
     constexpr float kNaturalPresence = 0.58F;
@@ -763,8 +790,9 @@ int main() {
     constexpr float kNaturalStretch = 0.96F;
     constexpr float kNaturalPedalThreshold = 64.0F;
     constexpr int kNaturalPedalMode = 0;
+    constexpr int kNaturalRenderBackend = 0;
     float image_value = 1.60F;
-    float gain_value = 1.85F;
+    float gain_value = 1.45F;
     float presence_value = 0.72F;
     float soft_pedal_value = 0.50F;
     float mic_mix_value = 0.20F;
@@ -776,6 +804,7 @@ int main() {
     float stretch_value = 0.90F;
     float pedal_threshold_value = 64.0F;
     int pedal_mode_value = 0;
+    int render_backend_value = 0;
     float custom_image_value = image_value;
     float custom_gain_value = gain_value;
     float custom_presence_value = presence_value;
@@ -789,9 +818,12 @@ int main() {
     float custom_stretch_value = stretch_value;
     float custom_pedal_threshold_value = pedal_threshold_value;
     int custom_pedal_mode_value = pedal_mode_value;
+    int custom_render_backend_value = render_backend_value;
 
     std::optional<int> mouse_note = std::nullopt;
     SDL_AudioDeviceID device = 0;
+    int active_backend_diag = -1;
+    std::uint64_t gpu_fallback_diag = 0;
 
     std::atomic<EngineLoadState> load_state{EngineLoadState::Loading};
     std::atomic<bool> loader_done{false};
@@ -807,7 +839,7 @@ int main() {
     const float requested_mic_mix = std::clamp(env_or_default_float("VB_TESTER_MIC_MIX", 0.28F), 0.0F, 1.0F);
     const float requested_presence = std::clamp(env_or_default_float("VB_TESTER_PRESENCE", 0.58F), kPresenceMin, kPresenceMax);
     const float requested_stereo_width = std::clamp(env_or_default_float("VB_TESTER_STEREO_WIDTH", 1.60F), kImageMin, kImageMax);
-    const float requested_output_gain = std::clamp(env_or_default_float("VB_TESTER_OUTPUT_GAIN", 1.85F), kGainMin, kGainMax);
+    const float requested_output_gain = std::clamp(env_or_default_float("VB_TESTER_OUTPUT_GAIN", 1.45F), kGainMin, kGainMax);
     const float requested_soft_pedal = std::clamp(env_or_default_float("VB_TESTER_SOFT_PEDAL", 0.50F), 0.0F, 1.0F);
     const float requested_image_engine = std::clamp(env_or_default_float("VB_TESTER_IMAGE_ENGINE", 1.25F), kImageEngineMin, kImageEngineMax);
     const float requested_gain_engine = std::clamp(env_or_default_float("VB_TESTER_GAIN_ENGINE", 1.00F), kGainEngineMin, kGainEngineMax);
@@ -816,6 +848,9 @@ int main() {
     const float requested_stretch = std::clamp(env_or_default_float("VB_TESTER_STRETCH", 0.96F), kStretchMin, kStretchMax);
     const float requested_pedal_threshold = std::clamp(env_or_default_float("VB_TESTER_PEDAL_THRESHOLD", 64.0F), kPedalThresholdMin, kPedalThresholdMax);
     const int requested_pedal_mode = std::clamp(env_or_default_int("VB_TESTER_PEDAL_MODE", 0), 0, 2);
+    const int requested_render_backend = std::clamp(env_or_default_int("VB_TESTER_RENDER_BACKEND", 0), 0, 2);
+    const float requested_fem_mix = std::clamp(env_or_default_float("VB_TESTER_FEM_MIX", 0.26F), 0.0F, 1.0F);
+    const float requested_fem_brightness = std::clamp(env_or_default_float("VB_TESTER_FEM_BRIGHTNESS", 0.54F), 0.0F, 1.0F);
     presence_value = requested_presence;
     image_value = requested_stereo_width;
     gain_value = requested_output_gain;
@@ -829,6 +864,7 @@ int main() {
     stretch_value = requested_stretch;
     pedal_threshold_value = requested_pedal_threshold;
     pedal_mode_value = requested_pedal_mode;
+    render_backend_value = requested_render_backend;
     custom_image_value = image_value;
     custom_gain_value = gain_value;
     custom_presence_value = presence_value;
@@ -842,10 +878,13 @@ int main() {
     custom_stretch_value = stretch_value;
     custom_pedal_threshold_value = pedal_threshold_value;
     custom_pedal_mode_value = pedal_mode_value;
+    custom_render_backend_value = render_backend_value;
     audio_state.stereo_width_target.store(image_value, std::memory_order_release);
     audio_state.output_gain_target.store(gain_value, std::memory_order_release);
     audio_state.stereo_width_current = image_value;
     audio_state.output_gain_current = gain_value;
+    audio_state.limiter_gain_current = 1.0F;
+    audio_state.limiter_env_current = 0.0F;
 
     std::string sfz_path_storage;
     if (const char* env = std::getenv("VB_PIANO_SFZ_PATH"); env != nullptr && env[0] != '\0') {
@@ -867,6 +906,9 @@ int main() {
         config.piano_disk_streaming_enabled = requested_streaming > 0 ? 1 : 0;
         config.piano_disk_stream_threshold_frames = static_cast<std::uint32_t>(std::clamp(requested_stream_threshold, 4096, 524288));
         config.piano_pedal_noise_enabled = requested_pedal_noise > 0 ? 1 : 0;
+        config.piano_render_backend = static_cast<std::uint32_t>(requested_render_backend);
+        config.piano_fem_mix = requested_fem_mix;
+        config.piano_fem_brightness = requested_fem_brightness;
         config.sample_rate = static_cast<double>(requested_rate);
 
         std::string loader_sfz = sfz_path_storage;
@@ -890,6 +932,23 @@ int main() {
 
     bool midi_started = false;
     bool running = true;
+    const bool log_enabled = env_or_default_int("VB_TESTER_LOG", 1) > 0;
+    int last_logged_active_backend = -999;
+    std::uint64_t last_logged_gpu_fallback = 0;
+    int render_backend_resend_ticks = 0;
+    auto last_diag_poll = std::chrono::steady_clock::now();
+    auto backend_label = [](const int value) -> const char* {
+        if (value == 0) {
+            return "AUTO";
+        }
+        if (value == 1) {
+            return "HYBRID";
+        }
+        if (value == 2) {
+            return "FULL_FEM";
+        }
+        return "UNKNOWN";
+    };
 
     auto close_settings_window = [&]() {
         if (settings_renderer != nullptr) {
@@ -914,7 +973,7 @@ int main() {
             SDL_WINDOWPOS_CENTERED,
             SDL_WINDOWPOS_CENTERED,
             560,
-            960,
+            1080,
             SDL_WINDOW_SHOWN
         );
         if (settings_window == nullptr) {
@@ -929,7 +988,7 @@ int main() {
         settings_window_id = SDL_GetWindowID(settings_window);
     };
 
-    std::array<CcDebugEntry, 12> cc_debug{{
+    std::array<CcDebugEntry, 13> cc_debug{{
         CcDebugEntry{"PEDAL", 64},
         CcDebugEntry{"SOFT", 67},
         CcDebugEntry{"REVERB", 71},
@@ -942,6 +1001,7 @@ int main() {
         CcDebugEntry{"STRET", 79},
         CcDebugEntry{"PTHR", 80},
         CcDebugEntry{"PMODE", 81},
+        CcDebugEntry{"RMODE", 82},
     }};
 
     const auto find_cc_debug = [&](const int cc) -> CcDebugEntry* {
@@ -1088,6 +1148,14 @@ int main() {
             custom_pedal_mode_value = pedal_mode_value;
         }
     };
+    const auto apply_render_backend = [&](const int value, const bool remember_custom) {
+        render_backend_value = std::clamp(value, 0, 2);
+        send_cc_tracked(82, cc_from_mode(render_backend_value));
+        render_backend_resend_ticks = 90;
+        if (remember_custom) {
+            custom_render_backend_value = render_backend_value;
+        }
+    };
 
     const auto apply_natural_all = [&]() {
         apply_image_post(kNaturalImagePost, false);
@@ -1103,6 +1171,7 @@ int main() {
         apply_stretch(kNaturalStretch, false);
         apply_pedal_threshold(kNaturalPedalThreshold, false);
         apply_pedal_mode(kNaturalPedalMode, false);
+        apply_render_backend(kNaturalRenderBackend, false);
     };
     const auto apply_custom_all = [&]() {
         apply_image_post(custom_image_value, false);
@@ -1118,6 +1187,7 @@ int main() {
         apply_stretch(custom_stretch_value, false);
         apply_pedal_threshold(custom_pedal_threshold_value, false);
         apply_pedal_mode(custom_pedal_mode_value, false);
+        apply_render_backend(custom_render_backend_value, false);
     };
 
     while (running) {
@@ -1159,7 +1229,20 @@ int main() {
                     send_cc_tracked(79, cc_from_range(stretch_value, kStretchMin, kStretchMax));
                     send_cc_tracked(80, cc_from_range(pedal_threshold_value, kPedalThresholdMin, kPedalThresholdMax));
                     send_cc_tracked(81, cc_from_mode(pedal_mode_value));
+                    send_cc_tracked(82, cc_from_mode(render_backend_value));
                     SDL_PauseAudioDevice(device, 0);
+                    if (log_enabled) {
+                        std::cerr
+                            << "[tester] ready"
+                            << " sample_rate=" << requested_rate
+                            << " buffer=" << requested_buffer
+                            << " voices=" << requested_voices
+                            << " req_backend=" << backend_label(render_backend_value)
+                            << " gain_post=" << gain_value
+                            << " image_post=" << image_value
+                            << " presence=" << presence_value
+                            << "\n";
+                    }
                     load_state.store(EngineLoadState::Ready, std::memory_order_release);
                 }
             }
@@ -1171,6 +1254,49 @@ int main() {
         }
 
         flush_pending_cc();
+
+        if (render_backend_resend_ticks > 0) {
+            if ((render_backend_resend_ticks % 6) == 0) {
+                send_cc_tracked(82, cc_from_mode(render_backend_value));
+            }
+            --render_backend_resend_ticks;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (load_state.load(std::memory_order_acquire) == EngineLoadState::Ready
+            && std::chrono::duration_cast<std::chrono::milliseconds>(now - last_diag_poll).count() >= 80) {
+            last_diag_poll = now;
+            auto* handle = audio_state.engine.load(std::memory_order_acquire);
+            if (handle != nullptr) {
+                vb_engine_diagnostics diagnostics{};
+                diagnostics.struct_size = sizeof(vb_engine_diagnostics);
+                if (vb_engine_get_diagnostics(handle, &diagnostics) == VB_ENGINE_OK) {
+                    active_backend_diag = static_cast<int>(diagnostics.active_render_backend);
+                    gpu_fallback_diag = diagnostics.gpu_fallback_blocks;
+                    if (log_enabled) {
+                        if (active_backend_diag != last_logged_active_backend) {
+                            std::cerr
+                                << "[tester] active_backend=" << backend_label(active_backend_diag)
+                                << " req_backend=" << backend_label(render_backend_value)
+                                << " gpu_fallback_blocks=" << gpu_fallback_diag
+                                << "\n";
+                            last_logged_active_backend = active_backend_diag;
+                        }
+                        if (gpu_fallback_diag != last_logged_gpu_fallback) {
+                            std::cerr
+                                << "[tester] gpu_fallback_blocks="
+                                << gpu_fallback_diag
+                                << " (+"
+                                << (gpu_fallback_diag - last_logged_gpu_fallback)
+                                << ") active_backend="
+                                << backend_label(active_backend_diag)
+                                << "\n";
+                            last_logged_gpu_fallback = gpu_fallback_diag;
+                        }
+                    }
+                }
+            }
+        }
 
         const std::uint8_t pedal_cc = midi_shared.pedal_cc.load(std::memory_order_acquire);
         const bool pedal_on = pedal_cc >= 64;
@@ -1195,6 +1321,10 @@ int main() {
         const SDL_Rect set_stretch_rect{20, 492, 416, 34};
         const SDL_Rect set_pedal_threshold_rect{20, 536, 416, 34};
         const SDL_Rect set_pedal_mode_rect{20, 580, 416, 34};
+        const SDL_Rect set_render_backend_rect{20, 624, 416, 34};
+        const SDL_Rect button_mode_auto_rect{20, 666, 132, 28};
+        const SDL_Rect button_mode_hybrid_rect{162, 666, 132, 28};
+        const SDL_Rect button_mode_full_rect{304, 666, 132, 28};
         const SDL_Rect button_nat_image_post_rect{444, 52, 44, 34};
         const SDL_Rect button_cus_image_post_rect{492, 52, 44, 34};
         const SDL_Rect button_nat_gain_post_rect{444, 96, 44, 34};
@@ -1221,6 +1351,8 @@ int main() {
         const SDL_Rect button_cus_pedal_threshold_rect{492, 536, 44, 34};
         const SDL_Rect button_nat_pedal_mode_rect{444, 580, 44, 34};
         const SDL_Rect button_cus_pedal_mode_rect{492, 580, 44, 34};
+        const SDL_Rect button_nat_render_backend_rect{444, 624, 44, 34};
+        const SDL_Rect button_cus_render_backend_rect{492, 624, 44, 34};
 
         SDL_Event event{};
         while (SDL_PollEvent(&event)) {
@@ -1355,6 +1487,14 @@ int main() {
                         apply_pedal_mode(custom_pedal_mode_value, false);
                         continue;
                     }
+                    if (point_in_rect(button_nat_render_backend_rect, mx, my)) {
+                        apply_render_backend(kNaturalRenderBackend, false);
+                        continue;
+                    }
+                    if (point_in_rect(button_cus_render_backend_rect, mx, my)) {
+                        apply_render_backend(custom_render_backend_value, false);
+                        continue;
+                    }
 
                     if (point_in_rect(set_image_post_rect, mx, my)) {
                         apply_image_post(slider_from_mouse(set_image_post_rect, mx, kImageMin, kImageMax), true);
@@ -1433,6 +1573,25 @@ int main() {
                         apply_pedal_mode(static_cast<int>(std::lround(mode_slider)), true);
                         active_slider = UiSlider::PedalMode;
                         active_slider_window_id = settings_window_id;
+                        continue;
+                    }
+                    if (point_in_rect(set_render_backend_rect, mx, my)) {
+                        const float mode_slider = slider_from_mouse(set_render_backend_rect, mx, kRenderBackendMin, kRenderBackendMax);
+                        apply_render_backend(static_cast<int>(std::lround(mode_slider)), true);
+                        active_slider = UiSlider::RenderBackend;
+                        active_slider_window_id = settings_window_id;
+                        continue;
+                    }
+                    if (point_in_rect(button_mode_auto_rect, mx, my)) {
+                        apply_render_backend(0, true);
+                        continue;
+                    }
+                    if (point_in_rect(button_mode_hybrid_rect, mx, my)) {
+                        apply_render_backend(1, true);
+                        continue;
+                    }
+                    if (point_in_rect(button_mode_full_rect, mx, my)) {
+                        apply_render_backend(2, true);
                         continue;
                     }
                 }
@@ -1560,6 +1719,11 @@ int main() {
                     if (active_slider == UiSlider::PedalMode) {
                         const float mode_slider = slider_from_mouse(set_pedal_mode_rect, event.motion.x, kPedalModeMin, kPedalModeMax);
                         apply_pedal_mode(static_cast<int>(std::lround(mode_slider)), true);
+                        continue;
+                    }
+                    if (active_slider == UiSlider::RenderBackend) {
+                        const float mode_slider = slider_from_mouse(set_render_backend_rect, event.motion.x, kRenderBackendMin, kRenderBackendMax);
+                        apply_render_backend(static_cast<int>(std::lround(mode_slider)), true);
                         continue;
                     }
                 }
@@ -1804,6 +1968,11 @@ int main() {
             draw_slider(set_pedal_threshold_rect, pedal_threshold_value, kPedalThresholdMin, kPedalThresholdMax, "PTHR", std::to_string(static_cast<int>(std::lround(pedal_threshold_value))));
             const char* mode_label = (pedal_mode_value == 1) ? "BIN" : ((pedal_mode_value == 2) ? "CONT" : "AUTO");
             draw_slider(set_pedal_mode_rect, static_cast<float>(pedal_mode_value), kPedalModeMin, kPedalModeMax, "PMODE", mode_label);
+            const char* render_mode_label = (render_backend_value == 1) ? "HYBR" : ((render_backend_value == 2) ? "FULL" : "AUTO");
+            draw_slider(set_render_backend_rect, static_cast<float>(render_backend_value), kRenderBackendMin, kRenderBackendMax, "RMODE", render_mode_label);
+            draw_button(button_mode_auto_rect, "AUTO", render_backend_value == 0);
+            draw_button(button_mode_hybrid_rect, "HYBRID", render_backend_value == 1);
+            draw_button(button_mode_full_rect, "FULL FEM", render_backend_value == 2);
 
             draw_button(global_nat_rect, "NAT ALL", false);
             draw_button(global_cus_rect, "CUS ALL", false);
@@ -1833,8 +2002,10 @@ int main() {
             draw_button(button_cus_pedal_threshold_rect, "CUS", false);
             draw_button(button_nat_pedal_mode_rect, "NAT", false);
             draw_button(button_cus_pedal_mode_rect, "CUS", false);
+            draw_button(button_nat_render_backend_rect, "NAT", false);
+            draw_button(button_cus_render_backend_rect, "CUS", false);
 
-            SDL_Rect debug_panel{20, 626, 520, 314};
+            SDL_Rect debug_panel{20, 706, 520, 354};
             SDL_SetRenderDrawColor(settings_renderer, 26, 26, 30, 255);
             SDL_RenderFillRect(settings_renderer, &debug_panel);
             SDL_SetRenderDrawColor(settings_renderer, 84, 84, 90, 255);
@@ -1864,8 +2035,28 @@ int main() {
                     + " POSTGAIN TAR" + zero_pad_int(static_cast<int>(std::lround(gain_value * 100.0F)), 3),
                 SDL_Color{170, 170, 174, 255}
             );
+            const char* active_backend_label = "UNK";
+            if (active_backend_diag == 0) {
+                active_backend_label = "AUTO";
+            } else if (active_backend_diag == 1) {
+                active_backend_label = "HYBR";
+            } else if (active_backend_diag == 2) {
+                active_backend_label = "FULL";
+            }
+            const char* requested_backend_label = (render_backend_value == 1)
+                ? "HYBR"
+                : ((render_backend_value == 2) ? "FULL" : "AUTO");
+            draw_text(
+                settings_renderer,
+                debug_panel.x + 8,
+                debug_panel.y + 56,
+                1,
+                std::string("REQ ") + requested_backend_label + " ACTIVE " + active_backend_label
+                    + " GPUFALL " + std::to_string(gpu_fallback_diag),
+                SDL_Color{170, 170, 174, 255}
+            );
 
-            int debug_y = debug_panel.y + 58;
+            int debug_y = debug_panel.y + 74;
             for (const auto& entry : cc_debug) {
                 const std::string line = std::string(entry.label)
                     + " C" + zero_pad_int(entry.cc, 3)
@@ -1881,7 +2072,7 @@ int main() {
 
             SDL_RenderPresent(settings_renderer);
         }
-        SDL_Delay(2);
+        SDL_Delay(8);
     }
 
     if (loader.joinable()) {

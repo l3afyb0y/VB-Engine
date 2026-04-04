@@ -33,6 +33,28 @@ vb::PedalMode to_pedal_mode(const std::uint32_t mode) {
     return vb::PedalMode::Auto;
 }
 
+vb::PianoRenderBackend to_render_backend(const std::uint32_t backend) {
+    if (backend == static_cast<std::uint32_t>(VB_PIANO_RENDER_BACKEND_CPU_HYBRID)) {
+        return vb::PianoRenderBackend::CpuHybrid;
+    }
+    if (backend == static_cast<std::uint32_t>(VB_PIANO_RENDER_BACKEND_GPU_FEM)) {
+        return vb::PianoRenderBackend::GpuFem;
+    }
+    return vb::PianoRenderBackend::Auto;
+}
+
+std::uint32_t from_render_backend(const vb::PianoRenderBackend backend) {
+    switch (backend) {
+        case vb::PianoRenderBackend::CpuHybrid:
+            return VB_PIANO_RENDER_BACKEND_CPU_HYBRID;
+        case vb::PianoRenderBackend::GpuFem:
+            return VB_PIANO_RENDER_BACKEND_GPU_FEM;
+        case vb::PianoRenderBackend::Auto:
+        default:
+            return VB_PIANO_RENDER_BACKEND_AUTO;
+    }
+}
+
 vb_engine_result push_event(vb_engine_handle* handle, const vb::MidiEvent& event) {
     if (!handle->engine.enqueue_event(event)) {
         return VB_ENGINE_ERROR_QUEUE_FULL;
@@ -87,6 +109,9 @@ void vb_engine_default_config(vb_engine_config* config_out) {
     config_out->piano_pedal_mode = VB_PEDAL_MODE_AUTO;
     config_out->piano_pedal_binary_threshold = 64;
     config_out->piano_pedal_noise_enabled = 0;
+    config_out->piano_render_backend = VB_PIANO_RENDER_BACKEND_AUTO;
+    config_out->piano_fem_mix = 0.26F;
+    config_out->piano_fem_brightness = 0.54F;
 }
 
 vb_engine_result vb_engine_create(const vb_engine_config* config, vb_engine_handle** out_handle) {
@@ -148,6 +173,15 @@ vb_engine_result vb_engine_create(const vb_engine_config* config, vb_engine_hand
     }
     if (has_field(offsetof(vb_engine_config, piano_pedal_noise_enabled), sizeof(config->piano_pedal_noise_enabled))) {
         internal.piano_pedal_noise_enabled = (config->piano_pedal_noise_enabled != 0);
+    }
+    if (has_field(offsetof(vb_engine_config, piano_render_backend), sizeof(config->piano_render_backend))) {
+        internal.piano_render_backend = to_render_backend(config->piano_render_backend);
+    }
+    if (has_field(offsetof(vb_engine_config, piano_fem_mix), sizeof(config->piano_fem_mix))) {
+        internal.piano_fem_mix = std::clamp(config->piano_fem_mix, 0.0F, 1.0F);
+    }
+    if (has_field(offsetof(vb_engine_config, piano_fem_brightness), sizeof(config->piano_fem_brightness))) {
+        internal.piano_fem_brightness = std::clamp(config->piano_fem_brightness, 0.0F, 1.0F);
     }
 
     try {
@@ -229,7 +263,8 @@ vb_engine_result vb_engine_process(
 }
 
 vb_engine_result vb_engine_get_diagnostics(vb_engine_handle* handle, vb_engine_diagnostics* out_diagnostics) {
-    if (handle == nullptr || out_diagnostics == nullptr || out_diagnostics->struct_size < sizeof(vb_engine_diagnostics)) {
+    constexpr std::size_t kLegacyDiagnosticsSize = offsetof(vb_engine_diagnostics, active_render_backend);
+    if (handle == nullptr || out_diagnostics == nullptr || out_diagnostics->struct_size < kLegacyDiagnosticsSize) {
         return VB_ENGINE_ERROR_INVALID_ARGUMENT;
     }
 
@@ -239,6 +274,10 @@ vb_engine_result vb_engine_get_diagnostics(vb_engine_handle* handle, vb_engine_d
     out_diagnostics->max_output_delta = stats.max_output_delta;
     out_diagnostics->hard_jump_events = stats.hard_jump_events;
     out_diagnostics->non_finite_output_samples = stats.non_finite_output_samples;
+    if (out_diagnostics->struct_size >= offsetof(vb_engine_diagnostics, gpu_fallback_blocks) + sizeof(out_diagnostics->gpu_fallback_blocks)) {
+        out_diagnostics->active_render_backend = from_render_backend(stats.active_render_backend);
+        out_diagnostics->gpu_fallback_blocks = stats.gpu_fallback_blocks;
+    }
     return VB_ENGINE_OK;
 }
 

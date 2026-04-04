@@ -5,6 +5,7 @@
 
 #include "core/instrument_type.hpp"
 #include "core/midi_event.hpp"
+#include "core/piano_render_backend.hpp"
 #include "core/spsc_queue.hpp"
 #include "core/voice_pool.hpp"
 
@@ -27,6 +28,9 @@ struct EngineConfig {
     PedalMode piano_pedal_mode{PedalMode::Auto};
     std::uint8_t piano_pedal_binary_threshold{64};
     bool piano_pedal_noise_enabled{false};
+    PianoRenderBackend piano_render_backend{PianoRenderBackend::Auto};
+    float piano_fem_mix{0.26F};
+    float piano_fem_brightness{0.54F};
 };
 
 struct EngineDiagnostics {
@@ -35,6 +39,8 @@ struct EngineDiagnostics {
     float max_output_delta{0.0F};
     std::uint64_t hard_jump_events{0};
     std::uint64_t non_finite_output_samples{0};
+    PianoRenderBackend active_render_backend{PianoRenderBackend::CpuHybrid};
+    std::uint64_t gpu_fallback_blocks{0};
 };
 
 class Engine {

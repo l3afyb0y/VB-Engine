@@ -2,7 +2,7 @@
 [Desktop Entry]
 Type=Application
 Name=VB Engine Piano Tester
-Comment=Click-to-play A2-C5 piano tester for VB-Engine (HQ profile, MIDI + pedal + advanced settings window)
+Comment=Click-to-play A2-C5 piano tester for VB-Engine (MIDI, pedal, advanced settings incl. AUTO/HYBRID/FULL render mode)
 Exec=env VB_TESTER_PEDAL_NOISE=0 /home/rowen/github-branches/VB-Engine/scripts/run-piano-tester.sh
 Terminal=false
 Categories=Audio;Music;

@@ -9,11 +9,14 @@ option(VB_ENGINE_BUILD_TESTS "Build unit tests" ON)
 option(VB_ENGINE_BUILD_BENCHMARKS "Build benchmark targets" ON)
 option(VB_ENGINE_BUILD_PIANO_TESTER "Build SDL piano tester app" ON)
 
+find_package(OpenCL QUIET)
+
 add_library(vb_engine_core STATIC
     src/core/engine.cpp
     src/core/voice_pool.cpp
     src/instruments/piano/sample_library.cpp
     src/instruments/piano/mechanics.cpp
+    src/instruments/piano/fem_string_body_model.cpp
     src/instruments/piano/sampled_piano_voice.cpp
     src/instruments/piano/resonance_matrix.cpp
     src/instruments/piano/post_processor.cpp
@@ -29,6 +32,10 @@ target_include_directories(vb_engine_core
 
 target_compile_options(vb_engine_core PRIVATE -Wall -Wextra -Wpedantic)
 set_target_properties(vb_engine_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(OpenCL_FOUND)
+    target_link_libraries(vb_engine_core PRIVATE OpenCL::OpenCL)
+    target_compile_definitions(vb_engine_core PRIVATE VB_ENGINE_ENABLE_OPENCL=1)
+endif()
 
 add_library(vb_engine SHARED src/c_api/c_api.cpp)
 target_link_libraries(vb_engine PRIVATE vb_engine_core)
@@ -44,21 +51,38 @@ target_link_libraries(vb_engine_standalone PRIVATE vb_engine_core)
 
 if(VB_ENGINE_BUILD_TESTS)
     enable_testing()
-    add_executable(vb_engine_tests tests/test_engine.cpp src/c_api/c_api.cpp)
-    target_link_libraries(vb_engine_tests PRIVATE vb_engine_core)
-    add_test(NAME vb_engine_tests COMMAND vb_engine_tests)
+    if(EXISTS "${PROJECT_SOURCE_DIR}/tests/test_engine.cpp")
+        add_executable(vb_engine_tests tests/test_engine.cpp src/c_api/c_api.cpp)
+        target_link_libraries(vb_engine_tests PRIVATE vb_engine_core)
+        add_test(NAME vb_engine_tests COMMAND vb_engine_tests)
+    else()
+        message(STATUS "tests/test_engine.cpp not found: skipping vb_engine_tests")
+    endif()
 
-    add_executable(vb_engine_soak_tests tests/test_soak.cpp src/c_api/c_api.cpp)
-    target_link_libraries(vb_engine_soak_tests PRIVATE vb_engine_core)
-    add_test(NAME vb_engine_soak_tests COMMAND vb_engine_soak_tests)
-    set_tests_properties(vb_engine_soak_tests PROPERTIES TIMEOUT 120)
+    if(EXISTS "${PROJECT_SOURCE_DIR}/tests/test_soak.cpp")
+        add_executable(vb_engine_soak_tests tests/test_soak.cpp src/c_api/c_api.cpp)
+        target_link_libraries(vb_engine_soak_tests PRIVATE vb_engine_core)
+        add_test(NAME vb_engine_soak_tests COMMAND vb_engine_soak_tests)
+        set_tests_properties(vb_engine_soak_tests PROPERTIES TIMEOUT 120)
+    else()
+        message(STATUS "tests/test_soak.cpp not found: skipping vb_engine_soak_tests")
+    endif()
 endif()
 
 if(VB_ENGINE_BUILD_BENCHMARKS)
-    add_executable(vb_engine_benchmark benchmarks/render_benchmark.cpp src/c_api/c_api.cpp)
-    target_link_libraries(vb_engine_benchmark PRIVATE vb_engine_core)
-    add_executable(vb_engine_onset_stress_benchmark benchmarks/onset_stress_benchmark.cpp src/c_api/c_api.cpp)
-    target_link_libraries(vb_engine_onset_stress_benchmark PRIVATE vb_engine_core)
+    if(EXISTS "${PROJECT_SOURCE_DIR}/benchmarks/render_benchmark.cpp")
+        add_executable(vb_engine_benchmark benchmarks/render_benchmark.cpp src/c_api/c_api.cpp)
+        target_link_libraries(vb_engine_benchmark PRIVATE vb_engine_core)
+    else()
+        message(STATUS "benchmarks/render_benchmark.cpp not found: skipping vb_engine_benchmark")
+    endif()
+
+    if(EXISTS "${PROJECT_SOURCE_DIR}/benchmarks/onset_stress_benchmark.cpp")
+        add_executable(vb_engine_onset_stress_benchmark benchmarks/onset_stress_benchmark.cpp src/c_api/c_api.cpp)
+        target_link_libraries(vb_engine_onset_stress_benchmark PRIVATE vb_engine_core)
+    else()
+        message(STATUS "benchmarks/onset_stress_benchmark.cpp not found: skipping vb_engine_onset_stress_benchmark")
+    endif()
 endif()
 
 add_executable(vb_engine_sample_generator tools/generate_piano_samples.cpp src/c_api/c_api.cpp)

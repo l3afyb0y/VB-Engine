@@ -72,6 +72,7 @@ VoicePool::VoicePool(const std::size_t max_voices, const float sample_rate, cons
     }
 
     initialize_tuning_table();
+    fem_model_.initialize(sample_rate_, options_.render_backend, options_.fem_mix, options_.fem_brightness);
 }
 
 void VoicePool::initialize_tuning_table() noexcept {
@@ -179,6 +180,7 @@ void VoicePool::note_on(
             slot.piano_fallback = AcousticGrandVoice{};
         }
         resonance_.note_on(note, humanized_velocity);
+        fem_model_.note_on(note, humanized_velocity, tuned_frequency_[note]);
 
         const PianoLayerSelection release_prefetch = sample_library_.select_layers(note, humanized_velocity, true, pedal_cc);
         release_prefetch_[note] = ReleasePrefetchEntry{
@@ -219,6 +221,7 @@ void VoicePool::note_off(const std::uint8_t note) noexcept {
     release_note(note);
     apply_damper_release(note, pedal_amount_);
     resonance_.trigger_damper_drop(1, pedal_amount_);
+    fem_model_.note_off(note);
 }
 
 void VoicePool::control_change(const std::uint8_t control, const std::uint8_t value) noexcept {
@@ -234,6 +237,27 @@ void VoicePool::control_change(const std::uint8_t control, const std::uint8_t va
         const float x = std::clamp(static_cast<float>(value) / 127.0F, 0.0F, 1.0F);
         options_.stretch_strength = std::clamp(0.75F + (0.75F * x), 0.75F, 1.50F);
         update_stretch_tuning();
+        return;
+    }
+    if (control == 82) {
+        if (value < 43) {
+            options_.render_backend = PianoRenderBackend::Auto;
+        } else if (value < 86) {
+            options_.render_backend = PianoRenderBackend::CpuHybrid;
+        } else {
+            options_.render_backend = PianoRenderBackend::GpuFem;
+        }
+        fem_model_.set_backend(options_.render_backend);
+        return;
+    }
+    if (control == 83) {
+        options_.fem_mix = std::clamp(static_cast<float>(value) / 127.0F, 0.0F, 1.0F);
+        fem_model_.set_voicing(options_.fem_mix, options_.fem_brightness);
+        return;
+    }
+    if (control == 84) {
+        options_.fem_brightness = std::clamp(static_cast<float>(value) / 127.0F, 0.0F, 1.0F);
+        fem_model_.set_voicing(options_.fem_mix, options_.fem_brightness);
         return;
     }
     if (control == 80) {
@@ -296,6 +320,7 @@ void VoicePool::control_change(const std::uint8_t control, const std::uint8_t va
     pedal_amount_ = std::clamp(static_cast<float>(value) / 127.0F, 0.0F, 1.0F);
     sustain_enabled_ = pedal_should_hold(pedal_amount_);
     resonance_.set_pedal(pedal_amount_);
+    fem_model_.set_pedal(pedal_amount_);
 
     if (options_.pedal_noise_enabled && value != previous) {
         const bool sustain_edge_down = !sustain_before && sustain_enabled_;
@@ -450,12 +475,44 @@ StereoFrame VoicePool::render_stereo() noexcept {
     }
     const float resonance_center = resonance_sample * 0.70710678F;
     const float mechanics_center = mechanics_sample * 0.70710678F;
+    float fem_l = 0.0F;
+    float fem_r = 0.0F;
+    const bool fem_active =
+        (options_.render_backend == PianoRenderBackend::GpuFem)
+        || ((options_.render_backend == PianoRenderBackend::Auto)
+            && (fem_model_.active_backend() == PianoRenderBackend::GpuFem));
+    if (fem_active) {
+        // Keep FEM excitation bounded so dense overlapping notes do not cause random level jumps.
+        const float fem_excitation = std::clamp(
+            ((resonance_center * 0.62F) + (mechanics_center * 0.52F)) + (0.10F * (sum_l + sum_r)),
+            -0.12F,
+            0.12F
+        );
+        fem_model_.render_sample(fem_excitation, fem_l, fem_r);
+    }
+    if (!std::isfinite(fem_l)) {
+        fem_l = 0.0F;
+    }
+    if (!std::isfinite(fem_r)) {
+        fem_r = 0.0F;
+    }
+    // Hard-guard FEM return energy to prevent abrupt jumps under dense overlap.
+    if (fem_active) {
+        const float fem_peak = std::max(std::abs(fem_l), std::abs(fem_r));
+        const float fem_guard = 0.16F / std::max(0.16F, fem_peak);
+        fem_l *= fem_guard;
+        fem_r *= fem_guard;
+    }
+    const float fem_core_mix = fem_active ? 0.18F : 0.0F;
+    const float fem_room_mix = fem_active ? 0.24F : 0.0F;
     sum_l += resonance_center + mechanics_center;
     sum_r += resonance_center + mechanics_center;
+    sum_l += fem_l * fem_core_mix;
+    sum_r += fem_r * fem_core_mix;
     close_l += (resonance_center * 0.22F) + (mechanics_center * 0.95F);
     close_r += (resonance_center * 0.22F) + (mechanics_center * 0.95F);
-    room_l += resonance_center * 0.78F;
-    room_r += resonance_center * 0.78F;
+    room_l += (resonance_center * 0.78F) + (fem_l * fem_room_mix);
+    room_r += (resonance_center * 0.78F) + (fem_r * fem_room_mix);
     resonance_activity_ += 0.006F * ((std::abs(resonance_sample) * 16.0F) - resonance_activity_);
     resonance_activity_ = std::clamp(resonance_activity_, 0.0F, 1.0F);
     const float register_focus_target = (register_weight_sum > 1.0e-6F)
@@ -689,6 +746,8 @@ VoicePoolDiagnostics VoicePool::diagnostics() const noexcept {
     return VoicePoolDiagnostics{
         .voice_steals = voice_steal_count_,
         .worst_stolen_activity = worst_stolen_activity_,
+        .active_render_backend = fem_model_.active_backend(),
+        .gpu_fallback_blocks = fem_model_.gpu_fallback_blocks(),
     };
 }
 

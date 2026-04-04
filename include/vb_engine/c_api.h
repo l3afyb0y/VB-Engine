@@ -30,6 +30,12 @@ typedef enum vb_pedal_mode {
     VB_PEDAL_MODE_CONTINUOUS = 2
 } vb_pedal_mode;
 
+typedef enum vb_piano_render_backend {
+    VB_PIANO_RENDER_BACKEND_AUTO = 0,
+    VB_PIANO_RENDER_BACKEND_CPU_HYBRID = 1,
+    VB_PIANO_RENDER_BACKEND_GPU_FEM = 2
+} vb_piano_render_backend;
+
 typedef struct vb_engine_config {
     uint32_t struct_size;
     uint32_t abi_version;
@@ -49,6 +55,9 @@ typedef struct vb_engine_config {
     uint32_t piano_pedal_mode;
     uint8_t piano_pedal_binary_threshold;
     uint8_t piano_pedal_noise_enabled;
+    uint32_t piano_render_backend;
+    float piano_fem_mix;
+    float piano_fem_brightness;
 } vb_engine_config;
 
 typedef struct vb_engine_diagnostics {
@@ -58,6 +67,8 @@ typedef struct vb_engine_diagnostics {
     float max_output_delta;
     uint64_t hard_jump_events;
     uint64_t non_finite_output_samples;
+    uint32_t active_render_backend;
+    uint64_t gpu_fallback_blocks;
 } vb_engine_diagnostics;
 
 uint32_t vb_engine_get_abi_version(void);

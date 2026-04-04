@@ -10,9 +10,9 @@
 /install_manifest.txt
 
 # Crash dumps / sanitizer artifacts
-core
-core.*
-vgcore.*
+/core
+/core.*
+/vgcore.*
 *.asan.*
 *.ubsan.*
 *.tsan.*
@@ -34,3 +34,5 @@ __pycache__/
 
 # Local development scratch area
 /dev/
+/tests/
+/benchmarks/
