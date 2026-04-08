@@ -9,6 +9,7 @@ mod piano_voice;
 
 use piano_model::PianoModel;
 use piano_output::soft_clip;
+use piano_strings::DcBlocker;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EngineConfig {
@@ -127,6 +128,10 @@ pub struct Engine {
     previous_output_left: f32,
     previous_output_right: f32,
     has_previous_output: bool,
+    /// Final-stage DC blocker: catches DC accumulated by body resonators,
+    /// ambience feedback loops, and any residual string-level bias.
+    dc_block_left: DcBlocker,
+    dc_block_right: DcBlocker,
 }
 
 impl Engine {
@@ -145,6 +150,8 @@ impl Engine {
             previous_output_left: 0.0,
             previous_output_right: 0.0,
             has_previous_output: false,
+            dc_block_left: DcBlocker::new(config.sample_rate_hz, 10.0),
+            dc_block_right: DcBlocker::new(config.sample_rate_hz, 10.0),
         })
     }
 
@@ -252,8 +259,10 @@ impl Engine {
         let mut peak_abs_sample: f32 = 0.0;
         for frame in 0..left.len() {
             let (raw_left, raw_right) = self.piano.render_frame(&self.config);
-            let mut frame_left = soft_clip(raw_left * self.config.master_gain);
-            let mut frame_right = soft_clip(raw_right * self.config.master_gain);
+            let blocked_left = self.dc_block_left.step(raw_left);
+            let blocked_right = self.dc_block_right.step(raw_right);
+            let mut frame_left = soft_clip(blocked_left * self.config.master_gain);
+            let mut frame_right = soft_clip(blocked_right * self.config.master_gain);
 
             if !frame_left.is_finite() || !frame_right.is_finite() {
                 self.non_finite_output_samples += 1;

@@ -12,7 +12,7 @@ impl StrikeProfile {
         let normalized_velocity = velocity as f32 / 127.0;
         let register_position = ((note as f32 - 21.0).max(0.0) / 87.0).clamp(0.0, 1.0);
         let soft_pedal_amount = soft_pedal_amount.clamp(0.0, 1.0);
-        let register_output_scale = 0.52 + (register_position * 0.48);
+        let register_output_scale = 0.82 - (register_position * 0.10);
 
         Self {
             initial_activity: (0.015 + (normalized_velocity.powf(1.20) * 0.30))
@@ -197,8 +197,12 @@ impl HammerModel {
         self.attack_noise *= self.attack_noise_decay;
 
         let in_contact = self.contact_force > 1.0e-5;
+        // Allow the sign of contact_velocity through: positive during
+        // the compression phase, negative during rebound.  This produces
+        // a naturally bipolar excitation pulse that avoids injecting DC
+        // into the string resonators.
         let contact_velocity_drive = if in_contact {
-            self.contact_velocity.abs() * 0.010
+            self.contact_velocity * 0.010
         } else {
             0.0
         };
@@ -208,12 +212,13 @@ impl HammerModel {
                 + (self.residual_bloom * 0.82)
                 + (dynamic_bloom * 0.70)
                 + (self.impact_pulse * 0.08),
-            excitation_drive: (self.contact_force * 0.00006)
-                + contact_velocity_drive
-                + (dynamic_bloom * 0.012),
-            string_transfer: (self.impact_pulse * (0.07 + (self.strike_brightness_bias * 0.18)))
-                + (self.residual_bloom * 0.18)
-                + (dynamic_bloom * 0.10),
+            // Resonator drive uses only the short-lived contact force and
+            // impact pulse.  Bloom terms modulate brightness (above), not
+            // the resonator drive signal, to avoid sustained DC injection
+            // into the high-DC-gain string resonators.
+            excitation_drive: (self.contact_force * 0.00012) + contact_velocity_drive,
+            string_transfer: self.impact_pulse
+                * (0.14 + (self.strike_brightness_bias * 0.36)),
             impact_emphasis: self.impact_pulse * (0.06 + (self.strike_brightness_bias * 0.40)),
             contact_damping: (dynamic_bloom * 0.05 + self.impact_pulse * 0.08).clamp(0.0, 0.30),
             direct_impulse: (self.impact_pulse * (self.strike_brightness_bias * 0.02))

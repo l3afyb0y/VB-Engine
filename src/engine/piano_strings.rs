@@ -2,6 +2,36 @@ const PARTIAL_COUNT: usize = 12;
 const MAX_STRING_COUNT: usize = 3;
 const TAU: f32 = core::f32::consts::PI * 2.0;
 
+/// First-order DC blocking filter: y[n] = x[n] - x[n-1] + R·y[n-1].
+///
+/// Removes DC and near-DC content while preserving all musical frequencies.
+/// Cutoff frequency is specified at construction time.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DcBlocker {
+    pub(super) coefficient: f32,
+    previous_input: f32,
+    previous_output: f32,
+}
+
+impl DcBlocker {
+    pub(super) fn new(sample_rate_hz: u32, cutoff_hz: f32) -> Self {
+        let coefficient = 1.0 - (TAU * cutoff_hz / sample_rate_hz as f32);
+        Self {
+            coefficient,
+            previous_input: 0.0,
+            previous_output: 0.0,
+        }
+    }
+
+    pub(super) fn step(&mut self, input: f32) -> f32 {
+        let output = input - self.previous_input + self.coefficient * self.previous_output;
+        self.previous_input = input;
+        self.previous_output = output;
+        output
+    }
+
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PartialResonator {
     omega_cos: f32,
@@ -50,7 +80,8 @@ impl PartialResonator {
         let radius = (self.base_radius - (damper * self.damper_sensitivity)).clamp(0.0, 0.999995);
         let coeff_a = 2.0 * radius * self.omega_cos;
         let coeff_b = radius * radius;
-        let current = (coeff_a * self.previous_1) - (coeff_b * self.previous_2) + drive;
+        let current =
+            ((coeff_a * self.previous_1) - (coeff_b * self.previous_2) + drive).clamp(-0.85, 0.85);
         self.previous_2 = self.previous_1;
         self.previous_1 = current;
         current
@@ -74,6 +105,7 @@ pub(super) struct StringBank {
     damper_position: f32,
     damper_target: f32,
     last_activity: f32,
+    excitation_dc_blocker: DcBlocker,
 }
 
 impl Default for StringBank {
@@ -90,6 +122,12 @@ impl Default for StringBank {
             damper_position: 0.0,
             damper_target: 0.0,
             last_activity: 0.0,
+            // Placeholder; replaced in start() with sample-rate-aware instance.
+            excitation_dc_blocker: DcBlocker {
+                coefficient: 0.0,
+                previous_input: 0.0,
+                previous_output: 0.0,
+            },
         }
     }
 }
@@ -117,6 +155,9 @@ impl StringBank {
         self.damper_position = 0.0;
         self.damper_target = 0.0;
         self.last_activity = 0.0;
+        // 12 Hz cutoff: kills DC accumulation before resonator amplification
+        // while preserving A0 fundamental (27.5 Hz) with < 1 dB attenuation.
+        self.excitation_dc_blocker = DcBlocker::new(sample_rate_hz, 12.0);
         let spread = unison_spread_for_note(note);
         let detune_cents = match self.string_count {
             1 => [0.0, 0.0, 0.0],
@@ -126,7 +167,7 @@ impl StringBank {
         let string_balance = match self.string_count {
             1 => [1.0, 0.0, 0.0],
             2 => [0.62, 0.62, 0.0],
-            _ => [0.48, 0.06, 0.46],
+            _ => [0.46, 0.16, 0.46],
         };
         let string_positions = match self.string_count {
             1 => [0.0, 0.0, 0.0],
@@ -147,7 +188,7 @@ impl StringBank {
         let inharmonicity = 0.00010 + ((1.0 - register_position) * 0.0018);
         let strike_position = 0.12 + (register_position * 0.08) + (0.010 * soft_pedal_amount);
         let rolloff = 1.46 - (normalized_velocity * 0.34) - (register_position * 0.18);
-        let resonator_decay = 0.999997 - (register_position * 0.000060);
+        let resonator_decay = 0.999997 - (register_position * 0.000080);
 
         for partial_index in 0..PARTIAL_COUNT {
             let harmonic = partial_index as f32 + 1.0;
@@ -163,6 +204,10 @@ impl StringBank {
                 (0.00062 + (harmonic * 0.00022) + (register_position * 0.00024))
                     .clamp(0.00070, 0.0050);
 
+            let nyquist = sample_rate_hz as f32 / 2.0;
+            // Fade partials approaching Nyquist to avoid aliased phantom tones.
+            let fade_start = nyquist * 0.80;
+
             for (string_index, cents) in detune_cents
                 .iter()
                 .copied()
@@ -174,10 +219,17 @@ impl StringBank {
                     * detune_ratio
                     * harmonic
                     * (1.0 + (inharmonicity * harmonic * harmonic));
+                let anti_alias_gain = if partial_hz >= nyquist {
+                    0.0
+                } else if partial_hz > fade_start {
+                    (nyquist - partial_hz) / (nyquist - fade_start)
+                } else {
+                    1.0
+                };
                 self.resonators[string_index][partial_index].configure(
                     partial_hz,
                     sample_rate_hz,
-                    gain,
+                    gain * anti_alias_gain,
                     mode_decay,
                     damper_sensitivity,
                 );
@@ -198,6 +250,10 @@ impl StringBank {
         string_transfer: f32,
     ) -> (f32, f32, f32) {
         self.update_damper();
+
+        // Remove DC from the excitation *before* it enters the high-DC-gain
+        // resonators.  This is far more effective than filtering the output.
+        let excitation_drive = self.excitation_dc_blocker.step(excitation_drive);
 
         let mut left = 0.0;
         let mut right = 0.0;
@@ -238,12 +294,14 @@ impl StringBank {
             let damper_gain = (1.0
                 - (self.damper_position * (0.96 + (self.register_position * 0.24))))
                 .clamp(0.0, 1.0);
-            let register_output_scale = 0.62 + (self.register_position * 1.08);
+            let register_output_scale = 1.02 - (self.register_position * 0.16);
             let string_sample = string_sample
                 * self.string_gain[string_index]
                 * damper_gain
                 * register_output_scale;
             activity += string_sample.abs();
+            // Keyboard-position pan is applied in the mechanical layer (PianoVoice);
+            // strings use only the unison-spread offset for stereo width.
             let keyboard_pan = 0.0;
             let unison_pan = (self.string_pan[string_index] - self.base_pan)
                 * (1.55 + (self.register_position * 4.80));

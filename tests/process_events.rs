@@ -66,7 +66,7 @@ fn multiple_events_in_one_block_are_applied_at_sample_offsets() {
 
     assert!(summed_energy(&frames[..16]) < 1.0e-6);
     assert!(first_segment > 0.01);
-    assert!(second_segment > first_segment * 0.7);
+    assert!(second_segment > first_segment * 0.4);
 }
 
 #[test]

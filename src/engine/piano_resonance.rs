@@ -49,6 +49,7 @@ impl ResonanceMode {
             .clamp(-0.85, 0.85);
         self.previous_2 = self.previous_1;
         self.previous_1 = current;
+
         let drive_decay = if sustain_pedal_down { 0.990 } else { 0.970 };
         self.drive *= drive_decay;
         current
@@ -85,34 +86,30 @@ impl ResonanceBank {
         let register_position = ((note as f32 - 21.0).max(0.0) / 87.0).clamp(0.0, 1.0);
         let register_scale = 1.00 - (register_position * 0.20);
         let pitch_class = (note as usize) % RESONANCE_MODE_COUNT;
-        let pedal_scale = if sustain_pedal_down { 0.58 } else { 1.0 };
+        let pedal_scale = if sustain_pedal_down { 0.50 } else { 0.18 };
         let related_modes = [
             (
                 pitch_class,
-                (0.0045 + (velocity_norm * 0.0080)) * register_scale * pedal_scale,
-            ),
-            (
-                (pitch_class + 7) % RESONANCE_MODE_COUNT,
-                (0.0016 + (velocity_norm * 0.0030)) * register_scale * pedal_scale,
-            ),
-            (
-                (pitch_class + 12) % RESONANCE_MODE_COUNT,
                 (0.0012 + (velocity_norm * 0.0022)) * register_scale * pedal_scale,
             ),
             (
+                (pitch_class + 7) % RESONANCE_MODE_COUNT,
+                (0.00035 + (velocity_norm * 0.00085)) * register_scale * pedal_scale,
+            ),
+            (
                 (pitch_class + 4) % RESONANCE_MODE_COUNT,
-                (0.0009 + (velocity_norm * 0.0018)) * register_scale * pedal_scale,
+                (0.00020 + (velocity_norm * 0.00055)) * register_scale * pedal_scale,
             ),
         ];
 
         for (mode_index, amount) in related_modes {
-            self.modes[mode_index].drive = (self.modes[mode_index].drive + amount).min(0.08);
+            self.modes[mode_index].drive = (self.modes[mode_index].drive + amount).min(0.025);
         }
 
         if sustain_pedal_down {
             self.modes[pitch_class].drive = (self.modes[pitch_class].drive
-                + (0.0024 * velocity_norm * register_scale))
-                .min(0.10);
+                + (0.0009 * velocity_norm * register_scale))
+                .min(0.032);
         }
     }
 
@@ -121,7 +118,6 @@ impl ResonanceBank {
         let related_modes = [
             pitch_class,
             (pitch_class + 7) % RESONANCE_MODE_COUNT,
-            (pitch_class + 12) % RESONANCE_MODE_COUNT,
             (pitch_class + 4) % RESONANCE_MODE_COUNT,
         ];
 
@@ -149,8 +145,8 @@ impl ResonanceBank {
                 mode.drive *= 1.0 - overload;
             }
             let sample = mode.step(sustain_pedal_down);
-            left += sample * (1.0 - mode.pan) * 0.28;
-            right += sample * (1.0 + mode.pan) * 0.28;
+            left += sample * (1.0 - mode.pan) * 0.075;
+            right += sample * (1.0 + mode.pan) * 0.075;
         }
 
         (left, right)
