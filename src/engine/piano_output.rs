@@ -62,6 +62,9 @@ impl BodyMode {
 pub(super) struct PianoOutputStage {
     body_state_left: f32,
     body_state_right: f32,
+    bridge_fast: f32,
+    bridge_slow: f32,
+    bridge_energy: f32,
     body_modes: [BodyMode; BODY_MODE_COUNT],
     ambience_a_left: [f32; 1597],
     ambience_a_right: [f32; 1597],
@@ -96,6 +99,9 @@ impl PianoOutputStage {
         Self {
             body_state_left: 0.0,
             body_state_right: 0.0,
+            bridge_fast: 0.0,
+            bridge_slow: 0.0,
+            bridge_energy: 0.0,
             body_modes,
             ambience_a_left: [0.0; 1597],
             ambience_a_right: [0.0; 1597],
@@ -117,30 +123,43 @@ impl PianoOutputStage {
     ) -> (f32, f32) {
         let mono_drive = (frame_left + frame_right) * 0.5;
         let stereo_drive = frame_right - frame_left;
+        self.bridge_fast += 0.20 * (mono_drive - self.bridge_fast);
+        self.bridge_slow += 0.016 * (mono_drive - self.bridge_slow);
+        let bridge_band = self.bridge_fast - self.bridge_slow;
+        let bridge_energy_target = bridge_band.abs();
+        let bridge_response = if bridge_energy_target > self.bridge_energy {
+            0.055
+        } else {
+            0.006
+        };
+        self.bridge_energy += bridge_response * (bridge_energy_target - self.bridge_energy);
+        let bridge_bloom = bridge_band * (0.72 + (self.bridge_energy * 2.1));
 
-        self.body_state_left += 0.020 * (frame_left - self.body_state_left);
-        self.body_state_right += 0.020 * (frame_right - self.body_state_right);
+        let body_target_left = (frame_left * 0.08) + (bridge_bloom * 0.82) - (stereo_drive * 0.03);
+        let body_target_right = (frame_right * 0.08) + (bridge_bloom * 0.82) + (stereo_drive * 0.03);
+        self.body_state_left += 0.026 * (body_target_left - self.body_state_left);
+        self.body_state_right += 0.026 * (body_target_right - self.body_state_right);
 
         let mut body_left =
-            (self.body_state_left * 0.18) + (self.body_state_right * 0.06) + (mono_drive * 0.05);
+            (self.body_state_left * 0.24) + (self.body_state_right * 0.08) + (bridge_bloom * 0.07);
         let mut body_right =
-            (self.body_state_right * 0.18) + (self.body_state_left * 0.06) + (mono_drive * 0.05);
+            (self.body_state_right * 0.24) + (self.body_state_left * 0.08) + (bridge_bloom * 0.07);
 
         for mode in &mut self.body_modes {
             let excite = soft_clip(
-                (mono_drive * mode.coupling)
-                    + (stereo_drive * mode.pan * 0.010)
+                (bridge_bloom * mode.coupling * (0.88 + (self.bridge_energy * 0.90)))
+                    + (stereo_drive * mode.pan * 0.012)
                     + (((self.body_state_left + self.body_state_right) * 0.5)
                         * mode.coupling
-                        * 0.35),
-            ) * 0.65;
+                        * 0.28),
+            ) * 0.78;
             let sample = mode.step(excite);
-            body_left += sample * (1.0 - mode.pan) * 0.28;
-            body_right += sample * (1.0 + mode.pan) * 0.28;
+            body_left += sample * (1.0 - mode.pan) * 0.34;
+            body_right += sample * (1.0 + mode.pan) * 0.34;
         }
 
-        frame_left += body_left * body_gain * 0.16;
-        frame_right += body_right * body_gain * 0.16;
+        frame_left += body_left * body_gain * 0.22;
+        frame_right += body_right * body_gain * 0.22;
 
         let ambience_input_left = (frame_left * 0.22) + (frame_right * 0.05);
         let ambience_input_right = (frame_right * 0.22) + (frame_left * 0.05);
@@ -155,6 +174,9 @@ impl PianoOutputStage {
     pub(super) fn dampen_for_retrigger(&mut self) {
         self.body_state_left *= 0.28;
         self.body_state_right *= 0.28;
+        self.bridge_fast *= 0.20;
+        self.bridge_slow *= 0.20;
+        self.bridge_energy *= 0.18;
         for mode in &mut self.body_modes {
             mode.dampen(0.20);
         }

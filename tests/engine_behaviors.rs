@@ -494,6 +494,20 @@ fn lower_notes_ring_longer_than_higher_notes_after_release() {
 }
 
 #[test]
+fn extremely_low_sample_rates_do_not_make_dc_blockers_explode() {
+    let mut engine = Engine::new(EngineConfig {
+        sample_rate_hz: 1,
+        max_block_size: 64,
+        ..EngineConfig::default()
+    })
+    .expect("engine creates even at pathological sample rates");
+    engine.note_on(60, 96);
+
+    let block = render_block(&mut engine, 64);
+    assert!(block.iter().all(|sample| sample.is_finite()));
+}
+
+#[test]
 fn bass_note_is_not_overwhelmingly_louder_than_middle_c() {
     let mut bass = Engine::new(EngineConfig::default()).expect("bass engine creates");
     let mut middle = Engine::new(EngineConfig::default()).expect("middle engine creates");

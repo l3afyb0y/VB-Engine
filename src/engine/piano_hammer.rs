@@ -217,8 +217,7 @@ impl HammerModel {
             // the resonator drive signal, to avoid sustained DC injection
             // into the high-DC-gain string resonators.
             excitation_drive: (self.contact_force * 0.00012) + contact_velocity_drive,
-            string_transfer: self.impact_pulse
-                * (0.14 + (self.strike_brightness_bias * 0.36)),
+            string_transfer: self.impact_pulse * (0.14 + (self.strike_brightness_bias * 0.36)),
             impact_emphasis: self.impact_pulse * (0.06 + (self.strike_brightness_bias * 0.40)),
             contact_damping: (dynamic_bloom * 0.05 + self.impact_pulse * 0.08).clamp(0.0, 0.30),
             direct_impulse: (self.impact_pulse * (self.strike_brightness_bias * 0.02))

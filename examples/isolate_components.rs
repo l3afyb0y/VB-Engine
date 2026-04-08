@@ -68,7 +68,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "05-mechanical-only",
             EngineConfig {
                 string_gain: 0.0,
-                hammer_noise_gain: 0.0,
                 resonance_gain: 0.0,
                 body_gain: 0.0,
                 ambience_gain: 0.0,

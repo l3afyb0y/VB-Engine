@@ -15,7 +15,7 @@ pub(super) struct DcBlocker {
 
 impl DcBlocker {
     pub(super) fn new(sample_rate_hz: u32, cutoff_hz: f32) -> Self {
-        let coefficient = 1.0 - (TAU * cutoff_hz / sample_rate_hz as f32);
+        let coefficient = (1.0 - (TAU * cutoff_hz / sample_rate_hz as f32)).clamp(0.0, 0.999_995);
         Self {
             coefficient,
             previous_input: 0.0,
@@ -29,7 +29,6 @@ impl DcBlocker {
         self.previous_output = output;
         output
     }
-
 }
 
 #[derive(Debug, Clone, Copy)]
