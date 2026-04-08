@@ -1,5 +1,6 @@
 # Build output
 /build/
+/target/
 /cmake-build-*/
 
 # CMake/Ninja generated metadata
@@ -34,5 +35,4 @@ __pycache__/
 
 # Local development scratch area
 /dev/
-/tests/
-/benchmarks/
+/archive/

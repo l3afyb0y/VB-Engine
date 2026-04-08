@@ -1,133 +1,135 @@
 # VB-Engine
 
-Vibe Based Engine (VBE) is a sound engine made from the ground up, written in C++(20). It is designed to take MIDI inputs and output high-quality audio as a variety of instruments (Only Acoustic Grand Piano is currently implemented, but more instruments are planned).
+VB-Engine is being rewritten as a lean, Rust-native realtime audio engine with a modeled acoustic piano as the first serious target.
 
-This program was made with the intention of implementation within my other project found here: https://github.com/l3afyb0y/Piano-Midi-Player
+The old C/C++ implementation has been moved into `archive/` as a local reference and safety net. The live repo root now represents the future codebase.
 
-I have decided to release this engine to the public for use and modifications from others so that, if they find the engine's outputs to be of a higher quality than those they have access to, or find online, they may use them indiscriminately. This means the program was both designed to be built into my "MIDI player", but also attempts to be a plugin of sorts for other applications.
+## Current State
+- Rust project at repo root
+- Workspace now includes a thin `plugins/vst3` wrapper crate
+- Legacy implementation parked in `archive/`
+- Thin C ABI restored under `include/vb_engine/c_api.h`
+- Rebuilt Rust-native piano tester (`cargo run --features tester --bin piano_tester`)
+- Rust-backed verification and sample-generation scripts restored
+- Modeled piano currently includes:
+  - bounded block-size validation
+  - fixed-capacity voice pool
+  - inharmonic partial-bank voice with 1/2/3-string unison behavior
+  - sustain and soft pedal handling
+  - filtered hammer transient
+  - lightweight sympathetic resonance, body coupling, and ambience bloom
+  - voice-steal and output diagnostics
 
-If you'd like compatibility with another program, please let us know in the discussions page and we can try to work on it if compaibility is possible. If there is an instrument you'd like to see in this program, please reach out there as well.
-
-This project is a WIP until v1 release, when it will offically be considered stable and, in some sense, complete; however this doesn't mean it won't be subject to changes in the future.
-
-Please enjoy this engine and it's features/ability. The point of this being FOSS is to help allow anyone to get into music, as I am a firm believer music (and art), and software should always be free and accessible. To that end, in order to make that possible, we must all contribute to it's accesibility. This is my attempt at a contribution to such.
-
-Primary target is Arch Linux, with generic Linux installation support and architecture boundaries prepared for macOS/Windows wrappers.
-
+## Goals
+- Pure idiomatic Rust
+- Lean architecture with low dependency overhead
+- Realtime-safe render path
+- Minimal `unsafe`
+- Modeled sound generation instead of sample-library-driven playback
 
 ## Build
 ```bash
-cmake --preset debug
-cmake --build --preset debug
-ctest --preset debug
+cargo test
 ```
 
-
-## Generate Instrument Samples
-Prepare a redistributable sampled library (recommended):
-```bash
-bash scripts/fetch-piano-assets.sh salamander
-```
+Build the VST3 wrapper:
 
 ```bash
-bash scripts/generate-samples.sh
+cargo build -p vb-engine-vst3 --release
 ```
 
-Generated public showcase audio is stored in `Samples/`.
+Install the staged Linux VST3 bundle to `~/.vst3`:
 
-Override the library path:
 ```bash
-VB_PIANO_SFZ_PATH=/absolute/path/to/library.sfz bash scripts/generate-samples.sh
+bash scripts/install-vst3.sh
 ```
 
-Notes:
-- The core engine now requires an explicit `piano_sfz_path` if you want sampled playback from host code.
-- The sample generator and live tester still fall back to `Samples/Piano-Library/default.sfz` when present.
-- Current loader supports SFZ regions referencing WAV/AIFF/FLAC samples.
-- Render backend selection is exposed via C API:
-  - `VB_PIANO_RENDER_BACKEND_AUTO`
-  - `VB_PIANO_RENDER_BACKEND_CPU_HYBRID`
-  - `VB_PIANO_RENDER_BACKEND_GPU_FEM` (falls back safely if unavailable)
-- Demo showcase generation now includes slight deterministic micro-timing/velocity humanization to reduce rigid quantized feel.
+Install to a different VST3 directory:
 
-
-## Live Piano Tester
-Build and run the standalone click-to-play tester:
 ```bash
-cmake --preset release
-cmake --build --preset release --target vb_engine_piano_tester
-./build/release/vb_engine_piano_tester
+bash scripts/install-vst3.sh /some/other/vst3-dir
 ```
 
-Quick launcher:
+Render a quick Rust-generated demo WAV:
+
 ```bash
-scripts/run-piano-tester.sh
+cargo run --bin render_scale -- target/render-scale.wav
 ```
 
-Features:
-- key range `A2-C5`
-- pedal indicator/control in top bar (`gray` off, `green` on)
-- ALSA MIDI input selection via top-bar dropdown (`PORT n`)
-- async startup (window opens immediately while engine/sample library initializes)
+Render a small showcase set with plain, pedal, and soft-pedal phrases:
 
-Desktop entry (for local launcher integration):
-- `Samples/VB-Engine-Piano-Tester.desktop`
-
-Realtime defaults for stability:
-- sample rate: `48000`
-- audio buffer: `512`
-- max voices: `96`
-
-Optional overrides:
 ```bash
-VB_TESTER_SAMPLE_RATE=96000 VB_TESTER_BUFFER=1024 VB_TESTER_MAX_VOICES=80 scripts/run-piano-tester.sh
+cargo run --bin render_showcase -- target/showcase
 ```
 
-WAV health gate (peak/clipping/DC/jump checks):
+Run the rebuilt piano tester:
+
 ```bash
-bash scripts/check-wav-health.sh
+cargo run --features tester --bin piano_tester
 ```
 
-Capture a new comparison baseline:
+The tester now includes a separate settings window for live voicing changes. Use the top-bar settings button to open it, then drag the four color-coded sliders to tune:
+- master gain
+- hammer noise
+- resonance
+- body
+- ambience
+
+The VST3 wrapper currently exposes a wider advanced voicing surface than the tester, including:
+- master gain
+- string level
+- mechanical level
+- hammer noise color
+- resonance
+- body
+- ambience
+
+That gives host-side tuning and quick layer isolation in Carla by simply zeroing the layers you do not want to hear.
+
+The same controls can also be seeded through environment variables:
+
 ```bash
-bash scripts/capture-audio-baseline.sh /tmp/vb_engine_baseline_samples
+VB_TESTER_MASTER_GAIN=0.18 \
+VB_TESTER_HAMMER_NOISE=0.18 \
+VB_TESTER_RESONANCE=1.40 \
+VB_TESTER_BODY=1.00 \
+VB_TESTER_AMBIENCE=0.30 \
+cargo run --features tester --bin piano_tester
 ```
 
-Audio-diff quality gate against baseline:
-```bash
-./scripts/check-audio-quality.sh /tmp/vb_engine_baseline_samples
-```
+Run the full verification flow:
 
-Run full verification (tests + sanitizers + perf + sample health):
 ```bash
 bash scripts/run-full-verification.sh
 ```
 
-## Install
-### Arch Linux (one-and-done)
-```bash
-bash scripts/install-arch.sh
+## Repo Layout
+- `src/`: live Rust engine code
+- `plugins/vst3/`: thin VST3 wrapper crate
+- `src/bin/`: Rust-native command-line utilities
+- `include/`: thin embeddable C ABI header
+- `scripts/`: Rust-backed verification and generation entrypoints
+- `Samples/`: generated showcase renders
+- `tests/`: integration tests for engine behavior
+- `archive/`: local legacy C/C++ implementation, ignored by git
+- `dev/`: local scratch notes and prior planning artifacts
+
+## Fish PATH Note
+If Cargo-installed tools are not on `PATH`:
+
+```fish
+set -e fish_user_paths
+set -U fish_user_paths $HOME/.cargo/bin $fish_user_paths
+exec fish
 ```
 
-### Generic Linux (one-and-done)
-```bash
-bash scripts/install-linux.sh
+Then verify:
+
+```fish
+which cargo
+which c2rust
+which autocxx
 ```
-
-## Packaging
-- `PKGBUILD`: repository-source install package
-
-## Documentation
-- Docs index: `docs/README.md`
-- Architecture: `docs/architecture.md`
-- App integration guide: `docs/developer-app-integration.md`
-- Licensing/compliance guide: `docs/licensing-compliance.md`
-- Current known limits and improvement targets: `docs/limitations.md`
-- Compatibility matrix: `docs/compatibility-matrix.md`
-- Piano acoustics + replication doc: `docs/instruments/piano-acoustics-and-implementation.md`
-- Sampled piano implementation doc: `docs/instruments/piano-sampled-engine-implementation.md`
-- Instrument implementation standard: `docs/instrument-implementation-standard.md`
-- Packaging/install behavior: `docs/packaging-install.md`
 
 ## Status
-This is an iterative foundation intended for rapid integration into Piano Player first, then expansion toward plugin wrappers (CLAP/VST3/LV2/AU/AAX by tier).
+The Rust rewrite now covers the core engine, embeddable ABI surface, showcase generation, verification scripts, a rebuilt piano tester, and the first thin VST3 wrapper. The remaining work is about host validation, bundle polish, and deeper piano realism rather than standing up the basic replacement surfaces.

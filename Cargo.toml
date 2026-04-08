@@ -1,0 +1,27 @@
+[workspace]
+members = ["plugins/vst3"]
+
+[package]
+name = "vb-engine"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Lean Rust-native realtime audio engine focused on a modeled acoustic piano."
+
+[features]
+default = []
+tester = ["dep:alsa", "dep:sdl2"]
+
+[lib]
+name = "vb_engine"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+alsa = { version = "0.10", optional = true }
+sdl2 = { version = "0.38", optional = true }
+
+[[bin]]
+name = "piano_tester"
+path = "src/bin/piano_tester.rs"
+required-features = ["tester"]

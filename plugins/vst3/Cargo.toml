@@ -1,0 +1,15 @@
+[package]
+name = "vb-engine-vst3"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Thin VST3 wrapper for the VB-Engine piano core."
+
+[lib]
+name = "vb_engine_vst3"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+vb-engine = { path = "../..", default-features = false }
+vst3 = "0.3.0"

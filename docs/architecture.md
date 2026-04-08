@@ -1,139 +1,60 @@
-# VB-Engine Architecture
+# VB-Engine Rust Architecture
 
-## 1. Purpose
-VB-Engine is a realtime-safe audio engine intended to be embedded in host apps (DAWs, MIDI trainers, game audio tools) through a stable C ABI (`include/vb_engine/c_api.h`).
+## Purpose
+VB-Engine is a Rust-native realtime audio engine focused on modeled instrument synthesis, starting with acoustic piano and targeting plugin-host integration first.
 
-Core design goals:
-- No blocking/locking/allocation in audio callback.
-- Deterministic event handling.
-- High-quality piano rendering with robust anti-glitch guards.
-- Clean integration surface for external applications.
+## Design Priorities
+- Lean codebase with minimal scaffolding
+- Realtime-safe audio rendering
+- Predictable performance under bounded polyphony
+- Strong typed APIs and diagnostics
+- Minimal `unsafe`, isolated when unavoidable
 
-## 2. High-Level Data Flow
-1. Host thread(s) enqueue MIDI/control events through C API.
-2. Audio callback calls `vb_engine_process(...)`.
-3. Engine drains SPSC queue and applies events to `VoicePool`.
-4. `VoicePool` renders active voices + mechanics + resonance.
-5. Optional FEM body layer (backend-selected) contributes additional soundboard/body energy.
-6. `PianoPostProcessor` performs body/room/tone/output shaping.
-7. Engine writes interleaved frame output per requested channel layout.
+## Workspace Shape
+- The root `vb-engine` crate is the shared DSP core.
+- `plugins/vst3` is the first host wrapper crate and is intentionally thin.
+- The SDL/ALSA `piano_tester` is now behind the optional `tester` feature so downstream plugin builds do not inherit tester-only dependencies.
 
-## 3. Realtime Model
-Audio-thread invariants:
-- No `new/delete`, no `malloc/free`, no filesystem access, no mutex.
-- FTZ/DAZ enabled to reduce denormal CPU spikes on long decays.
-- Event transfer uses lock-free SPSC queue (`src/core/spsc_queue.hpp`).
+## Current Runtime Shape
+The initial Rust engine is intentionally small:
+- `EngineConfig` defines sample rate, max block size, max voices, sustain threshold, and the current top-level tone controls:
+  - `master_gain`
+  - `hammer_noise_gain`
+  - `resonance_gain`
+  - `body_gain`
+  - `ambience_gain`
+- `Engine` owns a preallocated voice pool and diagnostics counters.
+- `Engine::process_events` provides sample-offset block processing for plugin-host style MIDI, pedal, and parameter scheduling without reallocating the audio buffers.
+- `PianoModel` owns the preallocated piano voice pool plus resonance and output stages.
+- `PianoVoice` is now a coordinator over explicit piano submodels:
+  - `HammerModel` for strike energy, contact-force-style excitation, attack transient, and hammer escape behavior,
+  - `StringBank` for stateful damped string resonators, inharmonic partial response, bridge-memory coupling, and unison layout,
+  - voice lifecycle state for held vs. released decay plus bridge-feedback handoff between hammer and strings.
+- `render` mixes the modeled voice path with:
+  - hammer-driven string excitation,
+  - register-dependent 1/2/3-string unison behavior,
+  - lightweight sympathetic resonance,
+  - body coupling,
+  - lightweight ambience bloom.
+- `render_scale`, `render_showcase`, and `vb_engine` provide Rust-native offline render and verification entrypoints.
+- `RenderEvent` and `ProcessEvent` cover offline sequencing and plugin-facing block events respectively.
+- `EngineParameter` provides a typed automation surface for wrapper crates so plugin formats do not need their own private parameter-to-engine scheduling layer.
+- `src/c_api.rs` exposes a thin C-compatible ABI shim over the Rust engine for embeddable hosts.
+- `plugins/vst3` owns:
+  - VST3 processor/controller classes,
+  - host parameter metadata plus MIDI pedal mapping,
+  - block-event translation into `ProcessEvent`,
+  - the only intentionally retained raw-COM/FFI `unsafe` boundary in the current architecture.
+- `piano_tester` is a temporary validation harness for direct interaction with the engine. It is not a core product surface and can eventually be replaced by host-side plugin validation, especially in Carla.
 
-Control-thread responsibilities:
-- Push `note_on`, `note_off`, `control_change`.
-- Configure `vb_engine_config` before create.
+## Immediate Evolution Path
+The current voice model is still a bootstrap, not the destination. Planned upgrades:
+- package and validate the first Carla-loadable VST3 bundle
+- deepen hammer/contact behavior
+- richer string and damper interaction
+- deeper sympathetic resonance
+- stronger body or soundboard modeling
+- add LV2 later without reopening the core event/parameter seam
 
-## 4. Core Modules
-
-### `src/core/engine.*`
-- Owns queue and `VoicePool`.
-- Drains MIDI events each process block.
-- Applies output diagnostics (max jump, non-finite counters).
-- Includes final safety slew guard against pathological discontinuities.
-
-### `src/core/voice_pool.*`
-- Preallocated voice slots (sampled piano + modeled fallback + guitar stub).
-- Quietest-voice steal policy with short tail smoothing.
-- Pedal logic supports:
-  - `auto` (binary/continuous inference),
-  - `binary` (threshold),
-  - `continuous` (half-damper).
-- Uses per-note cached pan/register tables to reduce hot-path trig overhead.
-
-### `src/instruments/piano/sample_library.*`
-- Parses SFZ subset.
-- Loads WAV/AIFF/FLAC sample data.
-- Supports stereo regions, velocity layers, offsets/loops/tuning/release.
-- Optional disk-backed mapped storage for large regions.
-
-### `src/instruments/piano/sampled_piano_voice.*`
-- Per-voice sample playback with Hermite/sinc interpolation.
-- Velocity/register-aware attack/timbre shaping.
-- Continuous spectral smoothing to reduce synthetic timbre steps.
-- Double-slope release behavior and boundary de-click shaping.
-
-### `src/instruments/piano/mechanics.*`
-- Specialized non-polyphony mechanics voices:
-  - key-down,
-  - damper-fall,
-  - pedal motion.
-- Independent envelope/filter path with gentle safety limiting.
-
-### `src/instruments/piano/resonance_matrix.*`
-- String-coupled sympathetic resonance model.
-- Inharmonicity-aware feedback/damping behavior.
-- Soundboard/bridge/body coupling with pedal-dependent behavior.
-
-### `src/instruments/piano/fem_string_body_model.*`
-- Finite-difference string/body grid model used by the FEM backend path.
-- Backend routing supports `AUTO`, `CPU_HYBRID`, `GPU_FEM` selection semantics.
-- Realtime-safe fallback to CPU hybrid when GPU FEM path is unavailable.
-
-### `src/instruments/piano/post_processor.*`
-- Body + room convolution-style processing.
-- Presence/focus contour and phase-safe bus alignment.
-- Transparent limiting and DC management tuned for low artifact risk.
-
-### `src/c_api/c_api.cpp`
-- ABI boundary wrapper over internal C++ engine.
-- Supports forward-compatible config struct extension via `struct_size`.
-
-## 5. C ABI Contracts
-Defined in `include/vb_engine/c_api.h`:
-- `vb_engine_default_config`
-- `vb_engine_create` / `vb_engine_destroy`
-- `vb_engine_note_on` / `vb_engine_note_off` / `vb_engine_control_change`
-- `vb_engine_process`
-- diagnostics getters/reset
-
-Compatibility rule:
-- New fields append to `vb_engine_config`.
-- Runtime checks `struct_size` before reading optional fields.
-
-## 6. Configuration Surface (Current)
-Primary quality/performance knobs:
-- `sample_rate`, `max_block_size`, `max_voices`
-- `piano_sfz_path`
-- `piano_humanize_timing_ms`, `piano_humanize_velocity`
-- `piano_reverb_wet`, `piano_mic_mix`, `piano_presence`
-- `piano_stretch_strength`
-- disk streaming toggle/threshold
-- pedal mode + binary threshold + pedal mechanics enable
-
-## 7. Testing and Verification
-- Unit/behavior tests: `tests/test_engine.cpp`
-- Soak tests: `tests/test_soak.cpp`
-- Sanitizer preset: `asan-ubsan`
-- WAV artifact checks: `tools/analyze_wav_quality.cpp`, `scripts/check-wav-health.sh`
-- Showcase sample generation: `tools/generate_piano_samples.cpp`, `scripts/generate-samples.sh`
-
-## 8. Extending the Engine
-
-### Add a new instrument
-1. Add `voice` type under `src/instruments/<name>/`.
-2. Wire it into `VoicePool::VoiceSlot`, `note_on`, `note_off`, `render`.
-3. Add config and C API fields only if host-facing controls are required.
-4. Add dedicated tests and soak scenarios.
-
-### Modify piano behavior safely
-1. Keep callback path allocation-free.
-2. Validate with:
-   - `vb_engine_tests`,
-   - `vb_engine_soak_tests`,
-   - `asan-ubsan`,
-   - sample generation + wav health.
-3. Update docs under `docs/instruments/` and the relevant durable docs in `docs/`.
-
-## 9. Source Layout
-- `include/`: public API headers.
-- `src/`: engine/runtime.
-- `tests/`: correctness/regression.
-- `tools/`: offline generators/analyzers.
-- `scripts/`: install/build/test helper workflows.
-- `docs/`: architecture, integration, performance, limits.
-- `Samples/`: public example outputs and optional local sample-library metadata.
+## Legacy Reference
+The prior C/C++ implementation is stored in `archive/` for local reference only and is no longer the active architecture.

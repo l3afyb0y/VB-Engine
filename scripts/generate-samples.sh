@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "${REPO_ROOT}"
 
-cmake --preset release
-cmake --build --preset release --target vb_engine_sample_generator
-"${REPO_ROOT}/build/release/vb_engine_sample_generator"
+mkdir -p Samples
+cargo run --bin render_showcase -- Samples
