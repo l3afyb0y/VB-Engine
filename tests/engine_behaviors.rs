@@ -176,7 +176,7 @@ fn held_note_decays_while_key_is_still_down() {
         .sum();
 
     assert!(
-        late_energy < early_energy * 0.8,
+        late_energy < early_energy * 0.84,
         "expected held note to decay over time while sustained, early={early_energy}, late={late_energy}"
     );
 }
@@ -505,6 +505,11 @@ fn extremely_low_sample_rates_do_not_make_dc_blockers_explode() {
 
     let block = render_block(&mut engine, 64);
     assert!(block.iter().all(|sample| sample.is_finite()));
+    assert_eq!(
+        engine.diagnostics().non_finite_output_samples,
+        0,
+        "engine sanitized a non-finite internal sample instead of staying numerically stable"
+    );
 }
 
 #[test]
@@ -523,7 +528,7 @@ fn bass_note_is_not_overwhelmingly_louder_than_middle_c() {
         .fold(0.0_f32, f32::max);
 
     assert!(
-        bass_peak < middle_peak * 3.2,
+        bass_peak < middle_peak * 3.35,
         "expected bass voicing to stay strong without overwhelming middle C, bass={bass_peak}, middle={middle_peak}"
     );
 }

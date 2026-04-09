@@ -65,6 +65,9 @@ pub(super) struct PianoOutputStage {
     bridge_fast: f32,
     bridge_slow: f32,
     bridge_energy: f32,
+    direct_fast: f32,
+    direct_slow: f32,
+    direct_energy: f32,
     body_modes: [BodyMode; BODY_MODE_COUNT],
     ambience_a_left: [f32; 1597],
     ambience_a_right: [f32; 1597],
@@ -102,6 +105,9 @@ impl PianoOutputStage {
             bridge_fast: 0.0,
             bridge_slow: 0.0,
             bridge_energy: 0.0,
+            direct_fast: 0.0,
+            direct_slow: 0.0,
+            direct_energy: 0.0,
             body_modes,
             ambience_a_left: [0.0; 1597],
             ambience_a_right: [0.0; 1597],
@@ -134,6 +140,24 @@ impl PianoOutputStage {
         };
         self.bridge_energy += bridge_response * (bridge_energy_target - self.bridge_energy);
         let bridge_bloom = bridge_band * (0.72 + (self.bridge_energy * 2.1));
+
+        self.direct_fast += 0.26 * (mono_drive - self.direct_fast);
+        self.direct_slow += 0.040 * (mono_drive - self.direct_slow);
+        let direct_band = self.direct_fast - self.direct_slow;
+        let direct_energy_target = direct_band.abs();
+        let direct_response = if direct_energy_target > self.direct_energy {
+            0.08
+        } else {
+            0.018
+        };
+        self.direct_energy += direct_response * (direct_energy_target - self.direct_energy);
+        let direct_mono = soft_clip(
+            (mono_drive * 0.12)
+                + (direct_band * (0.24 + (self.direct_energy * 0.90)))
+                + (bridge_bloom * 0.04),
+        );
+        frame_left += (direct_mono - (stereo_drive * 0.012)) * 0.12;
+        frame_right += (direct_mono + (stereo_drive * 0.012)) * 0.12;
 
         let body_target_left = (frame_left * 0.08) + (bridge_bloom * 0.82) - (stereo_drive * 0.03);
         let body_target_right = (frame_right * 0.08) + (bridge_bloom * 0.82) + (stereo_drive * 0.03);
@@ -177,6 +201,9 @@ impl PianoOutputStage {
         self.bridge_fast *= 0.20;
         self.bridge_slow *= 0.20;
         self.bridge_energy *= 0.18;
+        self.direct_fast *= 0.24;
+        self.direct_slow *= 0.24;
+        self.direct_energy *= 0.18;
         for mode in &mut self.body_modes {
             mode.dampen(0.20);
         }

@@ -158,15 +158,16 @@ impl StringBank {
         // while preserving A0 fundamental (27.5 Hz) with < 1 dB attenuation.
         self.excitation_dc_blocker = DcBlocker::new(sample_rate_hz, 12.0);
         let spread = unison_spread_for_note(note);
+        let detune_scale = 0.92 + (register_position * 0.20);
         let detune_cents = match self.string_count {
             1 => [0.0, 0.0, 0.0],
-            2 => [-3.4, 3.8, 0.0],
-            _ => [-6.0, 0.0, 4.8],
+            2 => [-1.10 * detune_scale, 1.10 * detune_scale, 0.0],
+            _ => [-1.45 * detune_scale, 0.0, 1.20 * detune_scale],
         };
         let string_balance = match self.string_count {
             1 => [1.0, 0.0, 0.0],
-            2 => [0.62, 0.62, 0.0],
-            _ => [0.46, 0.16, 0.46],
+            2 => [0.60, 0.60, 0.0],
+            _ => [0.44, 0.20, 0.44],
         };
         let string_positions = match self.string_count {
             1 => [0.0, 0.0, 0.0],
@@ -184,10 +185,22 @@ impl StringBank {
         }
 
         let fundamental = midi_note_hz(note);
-        let inharmonicity = 0.00010 + ((1.0 - register_position) * 0.0018);
+        // Inharmonicity coefficient B: increases with register (thin treble strings
+        // have more bending stiffness relative to tension than thick bass strings).
+        let inharmonicity = 0.0001 + (register_position * 0.0035);
         let strike_position = 0.12 + (register_position * 0.08) + (0.010 * soft_pedal_amount);
         let rolloff = 1.46 - (normalized_velocity * 0.34) - (register_position * 0.18);
-        let resonator_decay = 0.999997 - (register_position * 0.000080);
+
+        // Frequency-dependent damping via per-partial T60 targets.
+        // T60 = time for a partial to decay 60 dB. Real pianos: upper partials
+        // decay 10-50x faster than the fundamental, creating the signature
+        // "bright attack → warm sustain" timbral evolution.
+        let sr = sample_rate_hz as f32;
+        let t60_base = 6.6 - (register_position * 5.4); // ~6.6s bass → ~1.2s treble
+        let damping_coeff = 0.142 + (register_position * 0.250); // steeper rolloff in treble
+
+        let nyquist = sr / 2.0;
+        let fade_start = nyquist * 0.80;
 
         for partial_index in 0..PARTIAL_COUNT {
             let harmonic = partial_index as f32 + 1.0;
@@ -198,14 +211,15 @@ impl StringBank {
             let softness = 1.0 / (1.0 + (soft_pedal_amount * harmonic * 0.30));
             let gain = ((strike_comb / harmonic.powf(rolloff)) * softness)
                 * (1.0 + (low_register_weight * 0.06));
-            let mode_decay = (resonator_decay - (harmonic * 0.0000026)).clamp(0.99993, 0.999998);
+
+            // Per-partial decay: exponential T60 falloff with harmonic number.
+            let t60 = t60_base * (-damping_coeff * harmonic).exp();
+            // Convert T60 to per-sample pole radius: r = 10^(-3 / (T60 * sr))
+            let mode_decay = 10.0_f32.powf(-3.0 / (t60 * sr)).clamp(0.99900, 0.999998);
+
             let damper_sensitivity =
                 (0.00062 + (harmonic * 0.00022) + (register_position * 0.00024))
                     .clamp(0.00070, 0.0050);
-
-            let nyquist = sample_rate_hz as f32 / 2.0;
-            // Fade partials approaching Nyquist to avoid aliased phantom tones.
-            let fade_start = nyquist * 0.80;
 
             for (string_index, cents) in detune_cents
                 .iter()
@@ -214,10 +228,11 @@ impl StringBank {
                 .take(self.string_count)
             {
                 let detune_ratio = 2.0_f32.powf(cents / 1200.0);
+                // Correct inharmonicity: f_n = n * f0 * sqrt(1 + B*n²)
                 let partial_hz = fundamental
                     * detune_ratio
                     * harmonic
-                    * (1.0 + (inharmonicity * harmonic * harmonic));
+                    * (1.0 + inharmonicity * harmonic * harmonic).sqrt();
                 let anti_alias_gain = if partial_hz >= nyquist {
                     0.0
                 } else if partial_hz > fade_start {
@@ -266,6 +281,7 @@ impl StringBank {
                 excitation_drive * self.excitation_scale * (0.92 + (string_index as f32 * 0.04));
             let impact_transfer =
                 string_transfer * self.excitation_scale * (1.00 + (string_index as f32 * 0.06));
+            let pickup_position = 0.478 - (self.register_position * 0.038);
 
             for partial_index in 0..PARTIAL_COUNT {
                 let harmonic = partial_index as f32 + 1.0;
@@ -273,6 +289,11 @@ impl StringBank {
                 let spectral_tilt = (bloom_weight * 2.0) - 0.55;
                 let brightness_boost =
                     (0.90 + (harmonic_brightness * spectral_tilt * 1.35)).max(0.45);
+                let pickup_weight = (core::f32::consts::PI * harmonic * pickup_position)
+                    .sin()
+                    .abs()
+                    .max(0.08)
+                    .powf(0.82);
                 let base_drive = 1.0 / (1.0 + (harmonic * 0.18));
                 let bright_drive = 0.72 + (harmonic_brightness * (0.30 + (bloom_weight * 1.80)));
                 let transfer_focus = 0.42 + (bloom_weight * 0.98);
@@ -286,14 +307,14 @@ impl StringBank {
                     + (impact_transfer * transfer_focus * transfer_drive * resonator.gain * 0.058)
                     + (bridge_drive * resonator.bridge_send * 0.004);
                 let mode_sample = resonator.step(mode_drive, self.damper_position);
-                string_sample += mode_sample * brightness_boost;
+                string_sample += mode_sample * brightness_boost * pickup_weight;
                 bridge_feedback += mode_sample * resonator.bridge_send;
             }
 
             let damper_gain = (1.0
                 - (self.damper_position * (0.96 + (self.register_position * 0.24))))
                 .clamp(0.0, 1.0);
-            let register_output_scale = 1.02 - (self.register_position * 0.16);
+            let register_output_scale = 0.94 + (self.register_position * 0.04);
             let string_sample = string_sample
                 * self.string_gain[string_index]
                 * damper_gain
@@ -303,7 +324,7 @@ impl StringBank {
             // strings use only the unison-spread offset for stereo width.
             let keyboard_pan = 0.0;
             let unison_pan = (self.string_pan[string_index] - self.base_pan)
-                * (1.55 + (self.register_position * 4.80));
+                * (1.20 + (self.register_position * 2.40));
             let string_pan = (keyboard_pan + unison_pan).clamp(-0.96, 0.96);
             left += string_sample * (1.0 - string_pan);
             right += string_sample * (1.0 + string_pan);
@@ -321,9 +342,9 @@ impl StringBank {
         } else {
             bridge_feedback / self.string_count as f32
         };
-        let bridge_retention = (0.64 + ((1.0 - self.register_position) * 0.16)
+        let bridge_retention = (0.60 + ((1.0 - self.register_position) * 0.14)
             - (self.damper_position * 0.52))
-            .clamp(0.10, 0.86);
+            .clamp(0.10, 0.82);
         self.bridge_memory = (self.bridge_memory * bridge_retention) + (bridge_feedback * 0.026);
         self.last_activity = (self.last_activity * 0.90).max(activity + self.bridge_memory.abs());
 
@@ -371,7 +392,7 @@ fn string_count_for_note(note: u8) -> usize {
 
 fn unison_spread_for_note(note: u8) -> f32 {
     let register_position = ((note as f32 - 21.0).max(0.0) / 87.0).clamp(0.0, 1.0);
-    0.012 + (register_position * 0.280)
+    0.010 + (register_position * 0.090)
 }
 
 #[cfg(test)]

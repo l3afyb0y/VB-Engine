@@ -44,14 +44,14 @@ const ENGINE_DEFAULTS: EngineConfig = EngineConfig {
     sample_rate_hz: 48_000,
     max_block_size: 512,
     max_voices: 32,
-    master_gain: 1.45,
-    string_gain: 1.35,
+    master_gain: 1.65,
+    string_gain: 1.50,
     mechanical_gain: 0.22,
     sustain_pedal_threshold: 64,
     hammer_noise_gain: 0.07,
-    resonance_gain: 0.32,
-    body_gain: 0.28,
-    ambience_gain: 0.14,
+    resonance_gain: 0.36,
+    body_gain: 0.42,
+    ambience_gain: 0.12,
 };
 
 const PARAMS: [ParameterSpec; PARAM_COUNT] = [

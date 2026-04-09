@@ -19,6 +19,8 @@ VB-Engine is a Rust-native realtime audio engine focused on modeled instrument s
 The initial Rust engine is intentionally small:
 - `EngineConfig` defines sample rate, max block size, max voices, sustain threshold, and the current top-level tone controls:
   - `master_gain`
+  - `string_gain`
+  - `mechanical_gain`
   - `hammer_noise_gain`
   - `resonance_gain`
   - `body_gain`

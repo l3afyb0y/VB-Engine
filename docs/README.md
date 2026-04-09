@@ -1,4 +1,4 @@
 # Docs
 
 - [Rust Architecture](./architecture.md)
-- VST3 install path currently defaults to `~/.vst3` via `scripts/install-vst3.sh`
+- The Linux VST3 install helper lives at `./install-vst3.sh` in the repo root and defaults to `~/.vst3`

@@ -99,7 +99,7 @@ impl PianoVoice {
             .step(self.last_string_feedback, hammer_noise_gain, self.pan);
         let strike_progress = (self.strike_age_frames as f32 / 192.0).clamp(0.0, 1.0);
         let hammer_presence = (1.0 - (strike_progress * 0.96)).clamp(0.03, 1.0);
-        let string_presence = 0.84 + (strike_progress * 0.22);
+        let string_presence = 0.96 + (strike_progress * 0.04);
         let (mut left, mut right, string_feedback) = self.strings.render(
             hammer_frame.harmonic_brightness,
             hammer_frame.excitation_drive,

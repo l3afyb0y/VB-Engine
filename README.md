@@ -41,14 +41,16 @@ cargo build -p vb-engine-vst3 --release
 Install the staged Linux VST3 bundle to `~/.vst3`:
 
 ```bash
-bash scripts/install-vst3.sh
+bash ./install-vst3.sh
 ```
 
 Install to a different VST3 directory:
 
 ```bash
-bash scripts/install-vst3.sh /some/other/vst3-dir
+bash ./install-vst3.sh /some/other/vst3-dir
 ```
+
+The install script builds `vb-engine-vst3`, stages a Linux VST3 bundle under `target/vst3-bundles/`, and then copies it into the destination VST3 directory.
 
 Render a quick Rust-generated demo WAV:
 
@@ -68,7 +70,7 @@ Run the rebuilt piano tester:
 cargo run --features tester --bin piano_tester
 ```
 
-The tester now includes a separate settings window for live voicing changes. Use the top-bar settings button to open it, then drag the four color-coded sliders to tune:
+The tester includes a separate settings window for live voicing changes. Use the top-bar settings button to open it, then drag the five sliders to tune:
 - master gain
 - hammer noise
 - resonance
@@ -79,7 +81,7 @@ The VST3 wrapper currently exposes a wider advanced voicing surface than the tes
 - master gain
 - string level
 - mechanical level
-- hammer noise color
+- hammer noise
 - resonance
 - body
 - ambience
@@ -103,11 +105,18 @@ Run the full verification flow:
 bash scripts/run-full-verification.sh
 ```
 
+The same verification entrypoint is also available through:
+
+```bash
+cargo run --bin vb_engine -- verify
+```
+
 ## Repo Layout
 - `src/`: live Rust engine code
 - `plugins/vst3/`: thin VST3 wrapper crate
 - `src/bin/`: Rust-native command-line utilities
 - `include/`: thin embeddable C ABI header
+- `install-vst3.sh`: Linux VST3 staging and install helper
 - `scripts/`: Rust-backed verification and generation entrypoints
 - `Samples/`: generated showcase renders
 - `tests/`: integration tests for engine behavior
