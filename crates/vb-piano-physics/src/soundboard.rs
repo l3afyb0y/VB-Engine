@@ -47,6 +47,8 @@ pub struct SoundboardConfig {
     pub rim_reflection: f32,
     /// Stereo observation width for the board radiation path.
     pub radiation_width: f32,
+    /// How strongly low-frequency board radiation collapses toward mono.
+    pub low_frequency_mono_collapse: f32,
 }
 
 impl Default for SoundboardConfig {
@@ -56,6 +58,7 @@ impl Default for SoundboardConfig {
             modal_gain: 1.0,
             rim_reflection: 0.72,
             radiation_width: 1.0,
+            low_frequency_mono_collapse: 0.78,
         }
     }
 }
@@ -82,6 +85,14 @@ pub struct SoundboardOutput {
     pub right: f32,
     /// Absolute reduced modal energy after this frame.
     pub modal_energy: f32,
+    /// Low-band board motion after the current frame.
+    pub low_board_motion: f32,
+    /// Mid-band board motion after the current frame.
+    pub mid_board_motion: f32,
+    /// Air-motion proxy after the current frame.
+    pub air_board_motion: f32,
+    /// Stereo side motion that survives low-frequency mono collapse.
+    pub side_board_motion: f32,
 }
 
 /// Compact modal soundboard state.
@@ -96,6 +107,7 @@ pub struct SoundboardModel {
     rim_reflection: f32,
     modal_gain: f32,
     radiation_width: f32,
+    low_frequency_mono_collapse: f32,
 }
 
 impl SoundboardModel {
@@ -124,6 +136,7 @@ impl SoundboardModel {
             rim_reflection: config.rim_reflection.clamp(0.0, 1.0),
             modal_gain: config.modal_gain.clamp(0.0, 4.0),
             radiation_width: config.radiation_width.clamp(0.0, 2.0),
+            low_frequency_mono_collapse: config.low_frequency_mono_collapse.clamp(0.0, 1.0),
         }
     }
 
@@ -150,23 +163,26 @@ impl SoundboardModel {
             + (self.low_board_motion * self.rim_reflection * 0.04);
         let mid_target =
             (bridge_velocity * 0.58) + (bridge_force * 0.24) + (self.mid_board_motion * 0.015);
-        let air_target = ((bridge_velocity - bridge_force) * 0.34) + (drive.string_side * 0.020);
-        let side_target =
-            (drive.string_side * 0.42) + (bridge_velocity * 0.028) - (bridge_force * 0.012);
+        let side_source = drive.string_side * (0.24 - (self.low_frequency_mono_collapse * 0.10));
+        let air_target = ((bridge_velocity - bridge_force) * 0.34)
+            + (drive.string_side * (0.014 - (self.low_frequency_mono_collapse * 0.004)));
+        let side_target = side_source + (bridge_velocity * 0.020) - (bridge_force * 0.008);
 
         self.low_board_motion += 0.010 * rim_support * (low_target - self.low_board_motion);
         self.mid_board_motion += 0.038 * (mid_target - self.mid_board_motion);
         self.air_board_motion += 0.092 * (air_target - self.air_board_motion);
         self.side_board_motion += 0.052 * (side_target - self.side_board_motion);
 
+        let direct_side_width =
+            self.radiation_width * (1.0 - (self.low_frequency_mono_collapse * 0.74));
         let mut left = (self.low_board_motion * 0.048)
             + (self.mid_board_motion * 0.036)
             + (self.air_board_motion * 0.016)
-            - (self.side_board_motion * 0.050 * self.radiation_width);
+            - (self.side_board_motion * 0.050 * direct_side_width);
         let mut right = (self.low_board_motion * 0.048)
             + (self.mid_board_motion * 0.036)
             + (self.air_board_motion * 0.016)
-            + (self.side_board_motion * 0.050 * self.radiation_width);
+            + (self.side_board_motion * 0.050 * direct_side_width);
         let mut modal_energy = 0.0;
 
         for mode in &mut self.modes {
@@ -177,8 +193,16 @@ impl SoundboardModel {
             let sample = mode.step(soft_clip(
                 modal_drive * mode.coupling * (0.80 + (self.stored_energy * 0.90)),
             ));
-            left += sample * mode.left_radiation * 0.19 * self.radiation_width;
-            right += sample * mode.right_radiation * 0.19 * self.radiation_width;
+            let mode_width = self.radiation_width
+                * ((1.0 - self.low_frequency_mono_collapse)
+                    + (self.low_frequency_mono_collapse * mode.stereo_weight));
+            let mono_radiation = (mode.left_radiation + mode.right_radiation) * 0.5;
+            let left_radiation =
+                mono_radiation + ((mode.left_radiation - mono_radiation) * mode_width);
+            let right_radiation =
+                mono_radiation + ((mode.right_radiation - mono_radiation) * mode_width);
+            left += sample * left_radiation * 0.19;
+            right += sample * right_radiation * 0.19;
             modal_energy += sample.abs();
         }
 
@@ -186,6 +210,10 @@ impl SoundboardModel {
             left: soft_clip(left * self.modal_gain),
             right: soft_clip(right * self.modal_gain),
             modal_energy: modal_energy + self.stored_energy,
+            low_board_motion: self.low_board_motion,
+            mid_board_motion: self.mid_board_motion,
+            air_board_motion: self.air_board_motion,
+            side_board_motion: self.side_board_motion * direct_side_width,
         }
     }
 
@@ -203,10 +231,17 @@ impl SoundboardModel {
     }
 
     /// Update realtime observation controls without resetting stored board energy.
-    pub fn set_controls(&mut self, modal_gain: f32, rim_reflection: f32, radiation_width: f32) {
+    pub fn set_controls(
+        &mut self,
+        modal_gain: f32,
+        rim_reflection: f32,
+        radiation_width: f32,
+        low_frequency_mono_collapse: f32,
+    ) {
         self.modal_gain = modal_gain.clamp(0.0, 4.0);
         self.rim_reflection = rim_reflection.clamp(0.0, 1.0);
         self.radiation_width = radiation_width.clamp(0.0, 2.0);
+        self.low_frequency_mono_collapse = low_frequency_mono_collapse.clamp(0.0, 1.0);
     }
 }
 
@@ -221,6 +256,7 @@ struct SoundboardMode {
     mid_weight: f32,
     air_weight: f32,
     side_weight: f32,
+    stereo_weight: f32,
     previous_1: f32,
     previous_2: f32,
 }
@@ -237,6 +273,7 @@ impl Default for SoundboardMode {
             mid_weight: 0.0,
             air_weight: 0.0,
             side_weight: 0.0,
+            stereo_weight: 0.0,
             previous_1: 0.0,
             previous_2: 0.0,
         }
@@ -270,6 +307,7 @@ impl SoundboardMode {
         self.mid_weight = mid_weight / total;
         self.air_weight = air_weight / total;
         self.side_weight = side_weight / total;
+        self.stereo_weight = ((frequency_hz / 1_200.0).clamp(0.0, 1.0)).powf(0.72);
         self.previous_1 = 0.0;
         self.previous_2 = 0.0;
     }
@@ -332,5 +370,34 @@ mod tests {
         }
 
         assert!(side_energy > 0.01);
+    }
+
+    #[test]
+    fn low_frequency_mono_collapse_reduces_side_radiation() {
+        let mut wide = SoundboardModel::new(SoundboardConfig {
+            low_frequency_mono_collapse: 0.0,
+            ..SoundboardConfig::default()
+        });
+        let mut collapsed = SoundboardModel::new(SoundboardConfig {
+            low_frequency_mono_collapse: 1.0,
+            ..SoundboardConfig::default()
+        });
+        let mut wide_side_energy = 0.0;
+        let mut collapsed_side_energy = 0.0;
+
+        for _ in 0..512 {
+            let drive = SoundboardDrive {
+                bridge_force: 0.26,
+                bridge_velocity: 0.14,
+                bridge_energy: 0.26,
+                string_side: 0.22,
+            };
+            let wide_output = wide.render(drive);
+            let collapsed_output = collapsed.render(drive);
+            wide_side_energy += (wide_output.left - wide_output.right).abs();
+            collapsed_side_energy += (collapsed_output.left - collapsed_output.right).abs();
+        }
+
+        assert!(collapsed_side_energy < wide_side_energy * 0.70);
     }
 }

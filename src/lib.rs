@@ -11,8 +11,8 @@ pub use c_api::{
     vb_engine_process, vb_engine_reset_diagnostics, vb_engine_result, vb_instrument,
 };
 pub use engine::{
-    Diagnostics, Engine, EngineConfig, EngineError, EngineParameter, RenderStats, SustainPedalMode,
-    SustainPedalState,
+    Diagnostics, Engine, EngineConfig, EngineError, EngineParameter, RenderDebugFrame, RenderMode,
+    RenderStats, SustainPedalMode, SustainPedalState,
 };
 pub use process::ProcessEvent;
 pub use sequence::{RenderEvent, render_event_sequence};

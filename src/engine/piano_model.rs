@@ -1,5 +1,5 @@
 use super::{
-    EngineConfig,
+    EngineConfig, RenderDebugFrame, RenderMode,
     piano_bridge::BridgeNetwork,
     piano_voice::{PianoVoice, VoiceLayers},
 };
@@ -88,13 +88,19 @@ impl PianoModel {
         self.soft_pedal_amount = amount.clamp(0.0, 1.0);
     }
 
-    pub(super) fn render_frame(&mut self, config: &EngineConfig) -> (f32, f32) {
+    pub(super) fn render_frame(
+        &mut self,
+        config: &EngineConfig,
+        render_mode: RenderMode,
+        low_frequency_mono_collapse_override: Option<f32>,
+    ) -> (f32, f32, RenderDebugFrame) {
         self.bridge.set_physical_controls(
             config.bridge_feedback_gain,
             config.downbearing_preload,
             config.plate_leak,
             config.soundboard_width,
             config.resonance_gain,
+            low_frequency_mono_collapse_override.unwrap_or(0.78),
         );
 
         let mut strings_left = 0.0;
@@ -136,11 +142,36 @@ impl PianoModel {
             config.resonance_gain,
             config.body_gain,
             config.ambience_gain,
+            render_mode,
         );
         self.bridge_reflection = bridge_frame.reflected_string_force;
         self.bridge_energy = bridge_frame.stored_energy;
 
-        (bridge_frame.left, bridge_frame.right)
+        (
+            bridge_frame.left,
+            bridge_frame.right,
+            RenderDebugFrame {
+                strings_left,
+                strings_right,
+                mechanical_left,
+                mechanical_right,
+                bridge_left: bridge_frame.bridge_left,
+                bridge_right: bridge_frame.bridge_right,
+                body_left: bridge_frame.body_left,
+                body_right: bridge_frame.body_right,
+                ambience_left: bridge_frame.ambience_left,
+                ambience_right: bridge_frame.ambience_right,
+                bridge_drive,
+                bridge_reflection: bridge_frame.reflected_string_force,
+                bridge_energy: bridge_frame.stored_energy,
+                projection_energy: bridge_frame.projection_energy,
+                low_board_motion: bridge_frame.low_board_motion,
+                mid_board_motion: bridge_frame.mid_board_motion,
+                air_board_motion: bridge_frame.air_board_motion,
+                side_board_motion: bridge_frame.side_board_motion,
+                ..RenderDebugFrame::default()
+            },
+        )
     }
 
     pub(super) fn active_voice_count(&self) -> usize {

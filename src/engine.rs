@@ -12,6 +12,15 @@ use piano_model::PianoModel;
 use piano_strings::DcBlocker;
 use vb_piano_physics::soft_clip;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RenderMode {
+    StringsOnly,
+    StringsPlusBridge,
+    StringsPlusBridgePlusBody,
+    #[default]
+    FullMix,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EngineConfig {
     pub sample_rate_hz: u32,
@@ -141,9 +150,39 @@ pub struct RenderStats {
     pub rendered_frames: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RenderDebugFrame {
+    pub strings_left: f32,
+    pub strings_right: f32,
+    pub mechanical_left: f32,
+    pub mechanical_right: f32,
+    pub bridge_left: f32,
+    pub bridge_right: f32,
+    pub body_left: f32,
+    pub body_right: f32,
+    pub ambience_left: f32,
+    pub ambience_right: f32,
+    pub bridge_drive: f32,
+    pub bridge_reflection: f32,
+    pub bridge_energy: f32,
+    pub projection_energy: f32,
+    pub low_board_motion: f32,
+    pub mid_board_motion: f32,
+    pub air_board_motion: f32,
+    pub side_board_motion: f32,
+    pub pre_dc_left: f32,
+    pub pre_dc_right: f32,
+    pub post_dc_left: f32,
+    pub post_dc_right: f32,
+    pub output_left: f32,
+    pub output_right: f32,
+}
+
 pub struct Engine {
     config: EngineConfig,
     piano: PianoModel,
+    render_mode: RenderMode,
+    low_frequency_body_mono_override: Option<f32>,
     voice_steals: u64,
     worst_stolen_activity: f32,
     max_output_delta: f32,
@@ -156,6 +195,7 @@ pub struct Engine {
     /// ambience feedback loops, and any residual string-level bias.
     dc_block_left: DcBlocker,
     dc_block_right: DcBlocker,
+    last_debug_frame: RenderDebugFrame,
 }
 
 impl Engine {
@@ -166,6 +206,8 @@ impl Engine {
         Ok(Self {
             config,
             piano,
+            render_mode: RenderMode::FullMix,
+            low_frequency_body_mono_override: None,
             voice_steals: 0,
             worst_stolen_activity: 0.0,
             max_output_delta: 0.0,
@@ -176,7 +218,24 @@ impl Engine {
             has_previous_output: false,
             dc_block_left: DcBlocker::new(config.sample_rate_hz, 10.0),
             dc_block_right: DcBlocker::new(config.sample_rate_hz, 10.0),
+            last_debug_frame: RenderDebugFrame::default(),
         })
+    }
+
+    pub fn set_render_mode(&mut self, mode: RenderMode) {
+        self.render_mode = mode;
+    }
+
+    pub fn render_mode(&self) -> RenderMode {
+        self.render_mode
+    }
+
+    pub fn set_low_frequency_body_mono_override(&mut self, amount: Option<f32>) {
+        self.low_frequency_body_mono_override = amount.map(|value| value.clamp(0.0, 1.0));
+    }
+
+    pub fn last_debug_frame(&self) -> RenderDebugFrame {
+        self.last_debug_frame
     }
 
     pub fn note_on(&mut self, note: u8, velocity: u8) {
@@ -326,7 +385,11 @@ impl Engine {
 
         let mut peak_abs_sample: f32 = 0.0;
         for frame in 0..left.len() {
-            let (raw_left, raw_right) = self.piano.render_frame(&self.config);
+            let (raw_left, raw_right, mut debug_frame) = self.piano.render_frame(
+                &self.config,
+                self.render_mode,
+                self.low_frequency_body_mono_override,
+            );
             let blocked_left = self.dc_block_left.step(raw_left);
             let blocked_right = self.dc_block_right.step(raw_right);
             let mut frame_left = soft_clip(blocked_left * self.config.master_gain);
@@ -353,6 +416,13 @@ impl Engine {
             self.previous_output_left = frame_left;
             self.previous_output_right = frame_right;
             peak_abs_sample = peak_abs_sample.max(frame_left.abs()).max(frame_right.abs());
+            debug_frame.pre_dc_left = raw_left;
+            debug_frame.pre_dc_right = raw_right;
+            debug_frame.post_dc_left = blocked_left;
+            debug_frame.post_dc_right = blocked_right;
+            debug_frame.output_left = frame_left;
+            debug_frame.output_right = frame_right;
+            self.last_debug_frame = debug_frame;
             left[frame] = frame_left;
             right[frame] = frame_right;
         }

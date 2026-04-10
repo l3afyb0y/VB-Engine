@@ -23,6 +23,8 @@ pub struct BridgeJunctionConfig {
     pub soundboard_modal_gain: f32,
     /// Stereo observation width for soundboard radiation.
     pub soundboard_radiation_width: f32,
+    /// How aggressively low-frequency soundboard radiation collapses toward mono.
+    pub low_frequency_mono_collapse: f32,
 }
 
 impl Default for BridgeJunctionConfig {
@@ -34,6 +36,7 @@ impl Default for BridgeJunctionConfig {
             plate_leak: 0.035,
             soundboard_modal_gain: 1.0,
             soundboard_radiation_width: 1.0,
+            low_frequency_mono_collapse: 0.78,
         }
     }
 }
@@ -68,6 +71,14 @@ pub struct BridgeJunctionFrame {
     pub reflected_string_force: f32,
     /// Stored soundboard/bridge energy after this frame.
     pub stored_energy: f32,
+    /// Low-band board motion after this frame.
+    pub low_board_motion: f32,
+    /// Mid-band board motion after this frame.
+    pub mid_board_motion: f32,
+    /// Air-motion proxy after this frame.
+    pub air_board_motion: f32,
+    /// Surviving side-board motion after low-frequency mono collapse.
+    pub side_board_motion: f32,
 }
 
 /// Reduced bridge junction plus soundboard modal bank.
@@ -92,6 +103,7 @@ impl BridgeJunction {
             modal_gain: config.soundboard_modal_gain,
             rim_reflection: 0.70 + (config.downbearing_preload.clamp(0.0, 1.0) * 0.18),
             radiation_width: config.soundboard_radiation_width,
+            low_frequency_mono_collapse: config.low_frequency_mono_collapse,
         });
 
         Self {
@@ -114,6 +126,7 @@ impl BridgeJunction {
         plate_leak: f32,
         soundboard_modal_gain: f32,
         soundboard_radiation_width: f32,
+        low_frequency_mono_collapse: f32,
     ) {
         self.downbearing_preload = downbearing_preload.clamp(0.0, 1.0);
         self.bridge_to_soundboard_coupling = bridge_to_soundboard_coupling.clamp(0.0, 2.0);
@@ -122,6 +135,7 @@ impl BridgeJunction {
             soundboard_modal_gain,
             0.70 + (self.downbearing_preload * 0.18),
             soundboard_radiation_width,
+            low_frequency_mono_collapse,
         );
     }
 
@@ -188,6 +202,10 @@ impl BridgeJunction {
                 -self.bridge_velocity * (0.020 + (preload * 0.020)) - self.bridge_position * 0.004,
             ),
             stored_energy: self.bridge_energy + soundboard.modal_energy,
+            low_board_motion: soundboard.low_board_motion,
+            mid_board_motion: soundboard.mid_board_motion,
+            air_board_motion: soundboard.air_board_motion,
+            side_board_motion: soundboard.side_board_motion,
         }
     }
 

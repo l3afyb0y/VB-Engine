@@ -1,3 +1,5 @@
+use super::RenderMode;
+
 use vb_piano_physics::{
     bridge_junction::{BridgeInput, BridgeJunction, BridgeJunctionConfig},
     soft_clip,
@@ -10,6 +12,17 @@ pub(super) struct BridgeFrame {
     pub(super) right: f32,
     pub(super) reflected_string_force: f32,
     pub(super) stored_energy: f32,
+    pub(super) bridge_left: f32,
+    pub(super) bridge_right: f32,
+    pub(super) body_left: f32,
+    pub(super) body_right: f32,
+    pub(super) ambience_left: f32,
+    pub(super) ambience_right: f32,
+    pub(super) projection_energy: f32,
+    pub(super) low_board_motion: f32,
+    pub(super) mid_board_motion: f32,
+    pub(super) air_board_motion: f32,
+    pub(super) side_board_motion: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +62,7 @@ impl BridgeNetwork {
                 plate_leak: 0.032,
                 soundboard_modal_gain: 1.0,
                 soundboard_radiation_width: 1.0,
+                low_frequency_mono_collapse: 0.78,
             }),
             sympathetic: SympatheticReceptors::new(SympatheticConfig {
                 sample_rate_hz,
@@ -73,10 +87,17 @@ impl BridgeNetwork {
         plate_leak: f32,
         soundboard_width: f32,
         sympathetic_gain: f32,
+        low_frequency_mono_collapse: f32,
     ) {
         self.bridge_feedback_gain = bridge_feedback_gain.clamp(0.0, 1.5);
-        self.junction
-            .set_controls(downbearing_preload, 0.88, plate_leak, 1.0, soundboard_width);
+        self.junction.set_controls(
+            downbearing_preload,
+            0.88,
+            plate_leak,
+            1.0,
+            soundboard_width,
+            low_frequency_mono_collapse,
+        );
         self.sympathetic.set_coupling_gain(sympathetic_gain);
     }
 
@@ -108,9 +129,8 @@ impl BridgeNetwork {
         resonance_gain: f32,
         body_gain: f32,
         ambience_gain: f32,
+        render_mode: RenderMode,
     ) -> BridgeFrame {
-        let mut left = strings_left + mechanical_left;
-        let mut right = strings_right + mechanical_right;
         let sustain_pedal_lift = sustain_pedal_lift.clamp(0.0, 1.0);
 
         let string_mono = (strings_left + strings_right) * 0.5;
@@ -143,8 +163,8 @@ impl BridgeNetwork {
             bridge_energy: junction_frame.stored_energy,
             damper_lift: sustain_pedal_lift,
         });
-        left += sympathetic.left * resonance_gain;
-        right += sympathetic.right * resonance_gain;
+        let sympathetic_left = sympathetic.left * resonance_gain;
+        let sympathetic_right = sympathetic.right * resonance_gain;
 
         self.projection_fast += 0.24 * (bridge_input - self.projection_fast);
         self.projection_slow += 0.040 * (bridge_input - self.projection_slow);
@@ -164,20 +184,38 @@ impl BridgeNetwork {
                 + (bridge_band * 0.04)
                 + (junction_frame.bridge_motion * 0.72),
         );
-        left += (bridge_projection - (string_stereo * 0.010)) * 0.14;
-        right += (bridge_projection + (string_stereo * 0.010)) * 0.14;
+        let bridge_left = sympathetic_left + ((bridge_projection - (string_stereo * 0.010)) * 0.14);
+        let bridge_right =
+            sympathetic_right + ((bridge_projection + (string_stereo * 0.010)) * 0.14);
 
-        let body_left = junction_frame.soundboard_left;
-        let body_right = junction_frame.soundboard_right;
-        left += body_left * body_gain * 0.62;
-        right += body_right * body_gain * 0.62;
+        let body_left = junction_frame.soundboard_left * body_gain * 0.62;
+        let body_right = junction_frame.soundboard_right * body_gain * 0.62;
 
-        let ambience_input_left = (body_left * 0.15) + (body_right * 0.03) + (left * 0.04);
-        let ambience_input_right = (body_right * 0.15) + (body_left * 0.03) + (right * 0.04);
+        let strings_mechanical_left = strings_left + mechanical_left;
+        let strings_mechanical_right = strings_right + mechanical_right;
+        let bridge_body_left = strings_mechanical_left + bridge_left + body_left;
+        let bridge_body_right = strings_mechanical_right + bridge_right + body_right;
+        let ambience_input_left =
+            (body_left * 0.15) + (body_right * 0.03) + (bridge_body_left * 0.04);
+        let ambience_input_right =
+            (body_right * 0.15) + (body_left * 0.03) + (bridge_body_right * 0.04);
         let (ambience_left, ambience_right) =
             self.render_ambience(ambience_input_left, ambience_input_right);
-        left += ambience_left * ambience_gain * 1.10;
-        right += ambience_right * ambience_gain * 1.10;
+        let ambience_left = ambience_left * ambience_gain * 1.10;
+        let ambience_right = ambience_right * ambience_gain * 1.10;
+
+        let (left, right) = match render_mode {
+            RenderMode::StringsOnly => (strings_mechanical_left, strings_mechanical_right),
+            RenderMode::StringsPlusBridge => (
+                strings_mechanical_left + bridge_left,
+                strings_mechanical_right + bridge_right,
+            ),
+            RenderMode::StringsPlusBridgePlusBody => (bridge_body_left, bridge_body_right),
+            RenderMode::FullMix => (
+                bridge_body_left + ambience_left,
+                bridge_body_right + ambience_right,
+            ),
+        };
 
         BridgeFrame {
             left,
@@ -185,6 +223,17 @@ impl BridgeNetwork {
             reflected_string_force: junction_frame.reflected_string_force
                 * self.bridge_feedback_gain,
             stored_energy: junction_frame.stored_energy + sympathetic.energy,
+            bridge_left,
+            bridge_right,
+            body_left,
+            body_right,
+            ambience_left,
+            ambience_right,
+            projection_energy: self.projection_energy,
+            low_board_motion: junction_frame.low_board_motion,
+            mid_board_motion: junction_frame.mid_board_motion,
+            air_board_motion: junction_frame.air_board_motion,
+            side_board_motion: junction_frame.side_board_motion,
         }
     }
 
@@ -225,13 +274,26 @@ impl BridgeNetwork {
 
 #[cfg(test)]
 mod tests {
+    use crate::engine::RenderMode;
+
     #[test]
     fn body_path_preserves_stereo_difference() {
         let mut bridge = super::BridgeNetwork::new(48_000);
         let mut side_energy = 0.0;
 
         for _ in 0..128 {
-            let frame = bridge.process(0.18, 0.34, 0.0, 0.0, 0.12, 0.0, 0.0, 1.0, 0.0);
+            let frame = bridge.process(
+                0.18,
+                0.34,
+                0.0,
+                0.0,
+                0.12,
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                RenderMode::StringsPlusBridgePlusBody,
+            );
             side_energy += (frame.left - frame.right).abs();
         }
 
