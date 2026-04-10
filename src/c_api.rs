@@ -2,7 +2,7 @@
 
 use std::ffi::c_char;
 
-use crate::{Engine, EngineConfig};
+use crate::{Engine, EngineConfig, SustainPedalMode};
 
 pub const VB_ENGINE_ABI_VERSION: u32 = 3;
 
@@ -125,6 +125,7 @@ pub unsafe extern "C" fn vb_engine_create(
         return vb_engine_result::VB_ENGINE_ERROR_INVALID_ARGUMENT;
     }
 
+    let defaults = EngineConfig::default();
     let engine_config = EngineConfig {
         sample_rate_hz: config.sample_rate.round() as u32,
         max_block_size: config.max_block_size as usize,
@@ -133,10 +134,16 @@ pub unsafe extern "C" fn vb_engine_create(
         string_gain: config.string_gain,
         mechanical_gain: config.mechanical_gain,
         sustain_pedal_threshold: config.sustain_pedal_threshold.max(1),
+        sustain_pedal_mode: SustainPedalMode::Binary,
+        hammer_hardness: defaults.hammer_hardness,
         hammer_noise_gain: config.hammer_noise_gain,
         resonance_gain: config.resonance_gain,
         body_gain: config.body_gain,
         ambience_gain: config.ambience_gain,
+        bridge_feedback_gain: defaults.bridge_feedback_gain,
+        downbearing_preload: defaults.downbearing_preload,
+        plate_leak: defaults.plate_leak,
+        soundboard_width: defaults.soundboard_width,
     };
 
     match Engine::new(engine_config) {

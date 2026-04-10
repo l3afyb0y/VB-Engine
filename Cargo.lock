@@ -95,6 +95,7 @@ version = "0.1.0"
 dependencies = [
  "alsa",
  "sdl2",
+ "vb-piano-physics",
 ]
 
 [[package]]
@@ -104,6 +105,10 @@ dependencies = [
  "vb-engine",
  "vst3",
 ]
+
+[[package]]
+name = "vb-piano-physics"
+version = "0.1.0"
 
 [[package]]
 name = "version-compare"

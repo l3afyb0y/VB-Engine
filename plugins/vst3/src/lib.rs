@@ -20,12 +20,13 @@ use parameters::{
 use vb_engine::{Engine, EngineConfig, ProcessEvent};
 use vst3::{Class, ComRef, ComWrapper, Steinberg::Vst::*, Steinberg::*, uid};
 
-const PLUGIN_NAME: &str = "VB-Engine Piano DEBUG HOT";
+const PLUGIN_NAME: &str = "VB-Engine Piano";
 const PLUGIN_VENDOR: &str = "VB-Engine";
 const PLUGIN_URL: &str = "https://example.invalid/vb-engine";
 const PLUGIN_EMAIL: &str = "noreply@example.invalid";
 const STATE_MAGIC: [u8; 4] = *b"VBP1";
-const STATE_VERSION: u32 = 1;
+const STATE_VERSION: u32 = 2;
+const LEGACY_PARAM_COUNT_V1: usize = 9;
 
 fn copy_cstring<const N: usize>(src: &str, dst: &mut [c_char; N]) {
     let c_string = CString::new(src).unwrap_or_else(|_| CString::default());
@@ -149,17 +150,41 @@ unsafe fn read_state(stream: *mut IBStream, state: &mut SerializedState) -> tres
         if stream_read_exact(&stream, &mut magic) != kResultOk || magic != STATE_MAGIC {
             return kResultFalse;
         }
-        if stream_read_exact(&stream, &mut version) != kResultOk
-            || u32::from_le_bytes(version) != STATE_VERSION
-        {
+        if stream_read_exact(&stream, &mut version) != kResultOk {
             return kResultFalse;
         }
-        for value in &mut state.values {
-            let mut bytes = [0_u8; 8];
-            if stream_read_exact(&stream, &mut bytes) != kResultOk {
+        match u32::from_le_bytes(version) {
+            STATE_VERSION => {
+                for value in &mut state.values {
+                    let mut bytes = [0_u8; 8];
+                    if stream_read_exact(&stream, &mut bytes) != kResultOk {
+                        return kResultFalse;
+                    }
+                    *value = f64::from_le_bytes(bytes);
+                }
+            }
+            1 => {
+                let mut legacy_values = [0.0_f64; LEGACY_PARAM_COUNT_V1];
+                for value in &mut legacy_values {
+                    let mut bytes = [0_u8; 8];
+                    if stream_read_exact(&stream, &mut bytes) != kResultOk {
+                        return kResultFalse;
+                    }
+                    *value = f64::from_le_bytes(bytes);
+                }
+                state.values[parameter_slot(ParameterId::MasterGain)] = legacy_values[0];
+                state.values[parameter_slot(ParameterId::StringLevel)] = legacy_values[1];
+                state.values[parameter_slot(ParameterId::MechanicalLevel)] = legacy_values[2];
+                state.values[parameter_slot(ParameterId::HammerNoise)] = legacy_values[3];
+                state.values[parameter_slot(ParameterId::Resonance)] = legacy_values[4];
+                state.values[parameter_slot(ParameterId::Body)] = legacy_values[5];
+                state.values[parameter_slot(ParameterId::Ambience)] = legacy_values[6];
+                state.values[parameter_slot(ParameterId::SustainPedal)] = legacy_values[7];
+                state.values[parameter_slot(ParameterId::SoftPedal)] = legacy_values[8];
+            }
+            _ => {
                 return kResultFalse;
             }
-            *value = f64::from_le_bytes(bytes);
         }
     }
 
@@ -191,10 +216,15 @@ fn engine_from_parameter_values(
             ParameterId::MasterGain => config.master_gain = plain,
             ParameterId::StringLevel => config.string_gain = plain,
             ParameterId::MechanicalLevel => config.mechanical_gain = plain,
+            ParameterId::HammerHardness => config.hammer_hardness = plain,
             ParameterId::HammerNoise => config.hammer_noise_gain = plain,
             ParameterId::Resonance => config.resonance_gain = plain,
             ParameterId::Body => config.body_gain = plain,
             ParameterId::Ambience => config.ambience_gain = plain,
+            ParameterId::BridgeFeedback => config.bridge_feedback_gain = plain,
+            ParameterId::Downbearing => config.downbearing_preload = plain,
+            ParameterId::PlateLeak => config.plate_leak = plain,
+            ParameterId::SoundboardWidth => config.soundboard_width = plain,
             ParameterId::SustainPedal | ParameterId::SoftPedal => {}
         }
     }
@@ -207,12 +237,17 @@ fn parameter_slot(parameter: ParameterId) -> usize {
         ParameterId::MasterGain => 0,
         ParameterId::StringLevel => 1,
         ParameterId::MechanicalLevel => 2,
-        ParameterId::HammerNoise => 3,
-        ParameterId::Resonance => 4,
-        ParameterId::Body => 5,
-        ParameterId::Ambience => 6,
-        ParameterId::SustainPedal => 7,
-        ParameterId::SoftPedal => 8,
+        ParameterId::HammerHardness => 3,
+        ParameterId::HammerNoise => 4,
+        ParameterId::Resonance => 5,
+        ParameterId::Body => 6,
+        ParameterId::Ambience => 7,
+        ParameterId::BridgeFeedback => 8,
+        ParameterId::Downbearing => 9,
+        ParameterId::PlateLeak => 10,
+        ParameterId::SoundboardWidth => 11,
+        ParameterId::SustainPedal => 12,
+        ParameterId::SoftPedal => 13,
     }
 }
 

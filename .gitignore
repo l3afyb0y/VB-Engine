@@ -36,3 +36,15 @@ __pycache__/
 # Local development scratch area
 /dev/
 /archive/
+tests/
+scripts/
+examples/
+References/
+RESEARCH*
+*.docx
+
+# AI artifacts
+task_plan.md
+progress.md
+findings.md
+reference.wav

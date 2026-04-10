@@ -1,3 +1,8 @@
+use super::{
+    piano_damper::DamperModel,
+    piano_physics::{NotePhysics, StringMaterialRegime},
+};
+
 const PARTIAL_COUNT: usize = 12;
 const MAX_STRING_COUNT: usize = 3;
 const TAU: f32 = core::f32::consts::PI * 2.0;
@@ -101,8 +106,8 @@ pub(super) struct StringBank {
     resonators: [[PartialResonator; PARTIAL_COUNT]; MAX_STRING_COUNT],
     bridge_memory: f32,
     excitation_scale: f32,
-    damper_position: f32,
-    damper_target: f32,
+    register_output_scale: f32,
+    damper: DamperModel,
     last_activity: f32,
     excitation_dc_blocker: DcBlocker,
 }
@@ -118,8 +123,8 @@ impl Default for StringBank {
             resonators: [[PartialResonator::default(); PARTIAL_COUNT]; MAX_STRING_COUNT],
             bridge_memory: 0.0,
             excitation_scale: 1.0,
-            damper_position: 0.0,
-            damper_target: 0.0,
+            register_output_scale: 1.0,
+            damper: DamperModel::default(),
             last_activity: 0.0,
             // Placeholder; replaced in start() with sample-rate-aware instance.
             excitation_dc_blocker: DcBlocker {
@@ -141,39 +146,28 @@ impl StringBank {
         pan: f32,
     ) {
         let normalized_velocity = velocity as f32 / 127.0;
-        let register_position = ((note as f32 - 21.0).max(0.0) / 87.0).clamp(0.0, 1.0);
-        let low_register_weight = 1.0 - register_position;
+        let note_physics = NotePhysics::for_note(note);
+        let register_position = note_physics.register_position;
+        let low_register_weight = note_physics.low_register_weight;
 
         self.bridge_memory = 0.0;
-        self.string_count = string_count_for_note(note);
+        self.string_count = note_physics.string_count;
         self.register_position = register_position;
         self.base_pan = pan;
-        self.excitation_scale = (0.38 + (register_position * 0.96) + (low_register_weight * 0.08))
+        self.excitation_scale = note_physics.excitation_scale_base
             * (0.78 + (normalized_velocity * 0.38))
             * (1.0 - (0.52 * soft_pedal_amount));
-        self.damper_position = 0.0;
-        self.damper_target = 0.0;
+        self.register_output_scale = note_physics.register_output_scale;
+        self.damper.reset_open();
         self.last_activity = 0.0;
-        // 12 Hz cutoff: kills DC accumulation before resonator amplification
-        // while preserving A0 fundamental (27.5 Hz) with < 1 dB attenuation.
-        self.excitation_dc_blocker = DcBlocker::new(sample_rate_hz, 12.0);
+        // Keep only a very light blocker on the resonator-drive path. The
+        // heavier 12 Hz cutoff stabilized earlier tuning passes, but it also
+        // shaved too much weight off the struck-note launch.
+        self.excitation_dc_blocker = DcBlocker::new(sample_rate_hz, 3.0);
         let spread = unison_spread_for_note(note);
-        let detune_scale = 0.92 + (register_position * 0.20);
-        let detune_cents = match self.string_count {
-            1 => [0.0, 0.0, 0.0],
-            2 => [-1.10 * detune_scale, 1.10 * detune_scale, 0.0],
-            _ => [-1.45 * detune_scale, 0.0, 1.20 * detune_scale],
-        };
-        let string_balance = match self.string_count {
-            1 => [1.0, 0.0, 0.0],
-            2 => [0.60, 0.60, 0.0],
-            _ => [0.44, 0.20, 0.44],
-        };
-        let string_positions = match self.string_count {
-            1 => [0.0, 0.0, 0.0],
-            2 => [-1.1, 1.1, 0.0],
-            _ => [-1.35, 0.0, 1.35],
-        };
+        let detune_cents = note_physics.unison_detune_cents();
+        let string_balance = note_physics.unison_balance();
+        let string_positions = note_physics.unison_positions();
 
         for string_index in 0..self.string_count {
             self.string_gain[string_index] = string_balance[string_index];
@@ -184,11 +178,11 @@ impl StringBank {
             self.string_pan[string_index] = pan;
         }
 
-        let fundamental = midi_note_hz(note);
+        let fundamental = note_physics.frequency_hz;
         // Inharmonicity coefficient B: increases with register (thin treble strings
         // have more bending stiffness relative to tension than thick bass strings).
-        let inharmonicity = 0.0001 + (register_position * 0.0035);
-        let strike_position = 0.12 + (register_position * 0.08) + (0.010 * soft_pedal_amount);
+        let inharmonicity = note_physics.inharmonicity_coefficient;
+        let strike_position = note_physics.strike_position_base + (0.010 * soft_pedal_amount);
         let rolloff = 1.46 - (normalized_velocity * 0.34) - (register_position * 0.18);
 
         // Frequency-dependent damping via per-partial T60 targets.
@@ -196,8 +190,8 @@ impl StringBank {
         // decay 10-50x faster than the fundamental, creating the signature
         // "bright attack → warm sustain" timbral evolution.
         let sr = sample_rate_hz as f32;
-        let t60_base = 6.6 - (register_position * 5.4); // ~6.6s bass → ~1.2s treble
-        let damping_coeff = 0.142 + (register_position * 0.250); // steeper rolloff in treble
+        let t60_base = note_physics.t60_base_s;
+        let damping_coeff = note_physics.damping_coeff;
 
         let nyquist = sr / 2.0;
         let fade_start = nyquist * 0.80;
@@ -209,17 +203,26 @@ impl StringBank {
                 .abs()
                 .max(0.06);
             let softness = 1.0 / (1.0 + (soft_pedal_amount * harmonic * 0.30));
+            let wound_weight = match note_physics.material_regime {
+                StringMaterialRegime::CopperWoundBass => 0.12,
+                StringMaterialRegime::PlainSteel => 0.0,
+            };
             let gain = ((strike_comb / harmonic.powf(rolloff)) * softness)
-                * (1.0 + (low_register_weight * 0.06));
+                * (1.0 + (low_register_weight * 0.06) + wound_weight);
 
             // Per-partial decay: exponential T60 falloff with harmonic number.
             let t60 = t60_base * (-damping_coeff * harmonic).exp();
             // Convert T60 to per-sample pole radius: r = 10^(-3 / (T60 * sr))
             let mode_decay = 10.0_f32.powf(-3.0 / (t60 * sr)).clamp(0.99900, 0.999998);
 
-            let damper_sensitivity =
-                (0.00062 + (harmonic * 0.00022) + (register_position * 0.00024))
-                    .clamp(0.00070, 0.0050);
+            let damper_sensitivity = (0.00062
+                + (harmonic * 0.00022)
+                + (register_position * 0.00024)
+                + match note_physics.material_regime {
+                    StringMaterialRegime::CopperWoundBass => 0.00018,
+                    StringMaterialRegime::PlainSteel => 0.0,
+                })
+            .clamp(0.00070, 0.0050);
 
             for (string_index, cents) in detune_cents
                 .iter()
@@ -262,23 +265,35 @@ impl StringBank {
         harmonic_brightness: f32,
         excitation_drive: f32,
         string_transfer: f32,
+        structural_launch: f32,
+        external_bridge_feedback: f32,
     ) -> (f32, f32, f32) {
-        self.update_damper();
+        let damper = self.damper.step(self.register_position);
 
-        // Remove DC from the excitation *before* it enters the high-DC-gain
-        // resonators.  This is far more effective than filtering the output.
-        let excitation_drive = self.excitation_dc_blocker.step(excitation_drive);
+        // Split the excitation path:
+        // - resonator_drive is lightly DC-blocked to prevent runaway bias
+        // - structural_launch keeps more of the low asymmetric strike energy
+        //   so the note can still feel "thrown into" the instrument.
+        let resonator_drive = self.excitation_dc_blocker.step(excitation_drive);
+        let launch_drive = structural_launch + (excitation_drive * 0.16);
 
         let mut left = 0.0;
         let mut right = 0.0;
         let mut bridge_feedback = 0.0;
         let mut activity = 0.0;
-        let bridge_drive = self.bridge_memory * (0.007 * (1.0 - (self.damper_position * 0.92)));
+        let free_motion = 0.22 + (damper.openness * 0.78);
+        let reflected_bridge_drive = external_bridge_feedback
+            * (0.18 + ((1.0 - self.register_position) * 0.12))
+            * free_motion
+            * (1.0 - (damper.choke * 0.72));
+        let bridge_drive = (self.bridge_memory * 0.010 + reflected_bridge_drive * 0.020)
+            * free_motion
+            * (1.0 - (damper.choke * 0.58));
 
         for string_index in 0..self.string_count {
             let mut string_sample = 0.0;
             let string_excitation =
-                excitation_drive * self.excitation_scale * (0.92 + (string_index as f32 * 0.04));
+                resonator_drive * self.excitation_scale * (0.92 + (string_index as f32 * 0.04));
             let impact_transfer =
                 string_transfer * self.excitation_scale * (1.00 + (string_index as f32 * 0.06));
             let pickup_position = 0.478 - (self.register_position * 0.038);
@@ -304,21 +319,19 @@ impl StringBank {
                     * bright_drive
                     * resonator.gain
                     * 0.030)
-                    + (impact_transfer * transfer_focus * transfer_drive * resonator.gain * 0.058)
-                    + (bridge_drive * resonator.bridge_send * 0.004);
-                let mode_sample = resonator.step(mode_drive, self.damper_position);
+                    + (impact_transfer * transfer_focus * transfer_drive * resonator.gain * 0.070)
+                    + (bridge_drive * resonator.bridge_send * 0.0048);
+                let mode_sample = resonator.step(mode_drive, damper.felt_contact);
                 string_sample += mode_sample * brightness_boost * pickup_weight;
                 bridge_feedback += mode_sample * resonator.bridge_send;
             }
 
-            let damper_gain = (1.0
-                - (self.damper_position * (0.96 + (self.register_position * 0.24))))
-                .clamp(0.0, 1.0);
-            let register_output_scale = 0.94 + (self.register_position * 0.04);
+            let damper_gain =
+                (1.0 - (damper.choke * (0.76 + (self.register_position * 0.18)))).clamp(0.0, 1.0);
             let string_sample = string_sample
                 * self.string_gain[string_index]
                 * damper_gain
-                * register_output_scale;
+                * self.register_output_scale;
             activity += string_sample.abs();
             // Keyboard-position pan is applied in the mechanical layer (PianoVoice);
             // strings use only the unison-spread offset for stereo width.
@@ -330,9 +343,11 @@ impl StringBank {
             right += string_sample * (1.0 + string_pan);
         }
 
-        let soundboard_bloom = self.bridge_memory
-            * (0.022 + ((1.0 - self.register_position) * 0.022))
-            * (1.0 - (self.damper_position * 0.75));
+        let soundboard_bloom = (self.bridge_memory
+            * (0.028 + ((1.0 - self.register_position) * 0.026))
+            * (0.62 + (damper.openness * 0.38))
+            * (1.0 - (damper.choke * 0.36)))
+            + (launch_drive * (0.040 + ((1.0 - self.register_position) * 0.018)));
         left += soundboard_bloom * 0.76;
         right += soundboard_bloom * 0.88;
         activity += soundboard_bloom.abs() * 0.75;
@@ -342,20 +357,22 @@ impl StringBank {
         } else {
             bridge_feedback / self.string_count as f32
         };
-        let bridge_retention = (0.60 + ((1.0 - self.register_position) * 0.14)
-            - (self.damper_position * 0.52))
+        let bridge_retention = (0.66 + ((1.0 - self.register_position) * 0.12)
+            - (damper.choke * 0.28))
             .clamp(0.10, 0.82);
-        self.bridge_memory = (self.bridge_memory * bridge_retention) + (bridge_feedback * 0.026);
+        self.bridge_memory = (self.bridge_memory * bridge_retention)
+            + (bridge_feedback * 0.030)
+            + (launch_drive * (0.045 + ((1.0 - self.register_position) * 0.018)))
+            + (reflected_bridge_drive * 0.028);
         self.last_activity = (self.last_activity * 0.90).max(activity + self.bridge_memory.abs());
 
         (left, right, bridge_feedback)
     }
 
-    pub(super) fn note_off(&mut self) {
-        self.damper_position = self.damper_position.max(0.12);
-        self.damper_target = 1.0;
-        self.bridge_memory *= 0.90;
-        self.last_activity *= 0.97;
+    pub(super) fn set_damper_control(&mut self, key_is_down: bool, sustain_pedal_lift: f32) {
+        self.damper.set_control(key_is_down, sustain_pedal_lift);
+        self.bridge_memory *= 0.96;
+        self.last_activity *= 0.985;
     }
 
     pub(super) fn activity(&self) -> f32 {
@@ -364,29 +381,6 @@ impl StringBank {
 
     pub(super) fn reset(&mut self) {
         *self = Self::default();
-    }
-
-    fn update_damper(&mut self) {
-        let response = if self.damper_target > self.damper_position {
-            0.08
-        } else {
-            0.03
-        };
-        self.damper_position += (self.damper_target - self.damper_position) * response;
-    }
-}
-
-pub(super) fn midi_note_hz(note: u8) -> f32 {
-    440.0 * 2.0_f32.powf((note as f32 - 69.0) / 12.0)
-}
-
-fn string_count_for_note(note: u8) -> usize {
-    if note < 52 {
-        1
-    } else if note < 68 {
-        2
-    } else {
-        3
     }
 }
 
@@ -399,20 +393,19 @@ fn unison_spread_for_note(note: u8) -> f32 {
 mod tests {
     use super::StringBank;
 
-    fn stereo_width(bank: &mut StringBank, brightness: f32, drive: f32) -> f32 {
-        let (left, right, _) = bank.render(brightness, drive, 0.0);
-        (left - right).abs()
-    }
-
     #[test]
-    fn upper_register_uses_more_unison_width() {
-        let mut low = StringBank::default();
-        let mut high = StringBank::default();
+    fn middle_register_initializes_full_trichord_state() {
+        let mut bass = StringBank::default();
+        let mut middle = StringBank::default();
 
-        low.start(45, 100, 48_000, 0.0, 0.0);
-        high.start(76, 100, 48_000, 0.0, 0.0);
+        bass.start(33, 100, 48_000, 0.0, 0.0);
+        middle.start(60, 100, 48_000, 0.0, 0.0);
 
-        assert!(stereo_width(&mut high, 0.4, 0.3) > stereo_width(&mut low, 0.4, 0.3));
+        assert_eq!(bass.string_count, 1);
+        assert_eq!(middle.string_count, 3);
+        assert!(middle.string_gain[1] > middle.string_gain[0]);
+        assert!(middle.string_pan[0] < middle.base_pan);
+        assert!(middle.string_pan[2] > middle.base_pan);
     }
 
     #[test]
@@ -420,9 +413,9 @@ mod tests {
         let mut bank = StringBank::default();
         bank.start(60, 110, 48_000, 0.0, 0.0);
 
-        let first = bank.render(0.6, 0.8, 0.05).0.abs();
-        let second = bank.render(0.2, 0.0, 0.0).0.abs();
-        let third = bank.render(0.1, 0.0, 0.0).0.abs();
+        let first = bank.render(0.6, 0.8, 0.05, 0.04, 0.0).0.abs();
+        let second = bank.render(0.2, 0.0, 0.0, 0.0, 0.0).0.abs();
+        let third = bank.render(0.1, 0.0, 0.0, 0.0, 0.0).0.abs();
 
         assert!(first > 0.0);
         assert!(second > 0.0);

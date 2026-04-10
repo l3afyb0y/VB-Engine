@@ -1,17 +1,17 @@
 use super::{
     EngineConfig,
-    piano_output::PianoOutputStage,
-    piano_resonance::ResonanceBank,
+    piano_bridge::BridgeNetwork,
     piano_voice::{PianoVoice, VoiceLayers},
 };
 
 #[derive(Debug, Clone)]
 pub(super) struct PianoModel {
     voices: Vec<PianoVoice>,
-    resonance: ResonanceBank,
-    output_stage: PianoOutputStage,
-    sustain_pedal_down: bool,
+    bridge: BridgeNetwork,
+    sustain_pedal_lift: f32,
     soft_pedal_amount: f32,
+    bridge_reflection: f32,
+    bridge_energy: f32,
 }
 
 impl PianoModel {
@@ -21,35 +21,45 @@ impl PianoModel {
 
         Self {
             voices,
-            resonance: ResonanceBank::new(config.sample_rate_hz),
-            output_stage: PianoOutputStage::new(config.sample_rate_hz),
-            sustain_pedal_down: false,
+            bridge: BridgeNetwork::new(config.sample_rate_hz),
+            sustain_pedal_lift: 0.0,
             soft_pedal_amount: 0.0,
+            bridge_reflection: 0.0,
+            bridge_energy: 0.0,
         }
     }
 
-    pub(super) fn note_on(&mut self, note: u8, velocity: u8, sample_rate_hz: u32) -> Option<f32> {
+    pub(super) fn note_on(
+        &mut self,
+        note: u8,
+        velocity: u8,
+        sample_rate_hz: u32,
+        hammer_hardness: f32,
+    ) -> Option<f32> {
         let retriggering_same_note = self
             .voices
             .iter()
             .any(|voice| voice.is_active() && voice.note() == note);
         if retriggering_same_note {
-            self.resonance.dampen_for_retrigger(note);
+            self.bridge.dampen_for_retrigger(note);
         }
         let (slot_index, stolen_energy) = self.pick_voice_slot(note);
         let voice = &mut self.voices[slot_index];
-        voice.start(note, velocity, sample_rate_hz, self.soft_pedal_amount);
-        let soft_resonance_scale = 1.0 - (self.soft_pedal_amount * 0.60);
-        let resonance_velocity = if retriggering_same_note {
-            ((velocity as f32 * 0.25 * soft_resonance_scale) as u8).max(1)
+        voice.start(
+            note,
+            velocity,
+            sample_rate_hz,
+            self.soft_pedal_amount,
+            hammer_hardness,
+        );
+        let soft_bridge_scale = 1.0 - (self.soft_pedal_amount * 0.60);
+        let bridge_velocity = if retriggering_same_note {
+            ((velocity as f32 * 0.25 * soft_bridge_scale) as u8).max(1)
         } else {
-            ((velocity as f32 * soft_resonance_scale) as u8).max(1)
+            ((velocity as f32 * soft_bridge_scale) as u8).max(1)
         };
-        self.resonance
-            .excite(note, resonance_velocity, self.sustain_pedal_down);
-        if retriggering_same_note {
-            self.output_stage.dampen_for_retrigger();
-        }
+        self.bridge
+            .note_on(note, bridge_velocity, self.sustain_pedal_is_down());
         stolen_energy
     }
 
@@ -59,18 +69,19 @@ impl PianoModel {
             .iter_mut()
             .filter(|voice| voice.is_active() && voice.note() == note)
         {
-            voice.note_off(self.sustain_pedal_down);
+            voice.note_off(self.sustain_pedal_lift);
         }
     }
 
     pub(super) fn set_sustain_pedal(&mut self, is_down: bool) {
-        if self.sustain_pedal_down && !is_down {
-            for voice in &mut self.voices {
-                voice.pedal_release();
-            }
-        }
+        self.set_sustain_pedal_lift(if is_down { 1.0 } else { 0.0 });
+    }
 
-        self.sustain_pedal_down = is_down;
+    pub(super) fn set_sustain_pedal_lift(&mut self, amount: f32) {
+        self.sustain_pedal_lift = amount.clamp(0.0, 1.0);
+        for voice in &mut self.voices {
+            voice.set_sustain_pedal_lift(self.sustain_pedal_lift);
+        }
     }
 
     pub(super) fn set_soft_pedal(&mut self, amount: f32) {
@@ -78,32 +89,58 @@ impl PianoModel {
     }
 
     pub(super) fn render_frame(&mut self, config: &EngineConfig) -> (f32, f32) {
-        let mut frame_left = 0.0;
-        let mut frame_right = 0.0;
+        self.bridge.set_physical_controls(
+            config.bridge_feedback_gain,
+            config.downbearing_preload,
+            config.plate_leak,
+            config.soundboard_width,
+            config.resonance_gain,
+        );
+
+        let mut strings_left = 0.0;
+        let mut strings_right = 0.0;
+        let mut mechanical_left = 0.0;
+        let mut mechanical_right = 0.0;
+        let mut bridge_drive = 0.0;
+        let active_voice_count = self.active_voice_count().max(1) as f32;
+        let per_voice_reflection = (self.bridge_reflection
+            * (0.85 + self.bridge_energy.clamp(0.0, 1.0) * 0.15))
+            / active_voice_count;
 
         for voice in &mut self.voices {
             let VoiceLayers {
-                strings_left,
-                strings_right,
-                mechanical_left,
-                mechanical_right,
-            } = voice.render(config.hammer_noise_gain);
-            frame_left += strings_left * config.string_gain;
-            frame_right += strings_right * config.string_gain;
-            frame_left += mechanical_left * config.mechanical_gain;
-            frame_right += mechanical_right * config.mechanical_gain;
+                strings_left: voice_strings_left,
+                strings_right: voice_strings_right,
+                mechanical_left: voice_mechanical_left,
+                mechanical_right: voice_mechanical_right,
+                bridge_drive: voice_bridge_drive,
+            } = voice.render(config.hammer_noise_gain, per_voice_reflection);
+            let voice_strings_left = voice_strings_left * config.string_gain;
+            let voice_strings_right = voice_strings_right * config.string_gain;
+            let voice_mechanical_left = voice_mechanical_left * config.mechanical_gain;
+            let voice_mechanical_right = voice_mechanical_right * config.mechanical_gain;
+            bridge_drive += voice_bridge_drive * config.string_gain;
+            strings_left += voice_strings_left;
+            strings_right += voice_strings_right;
+            mechanical_left += voice_mechanical_left;
+            mechanical_right += voice_mechanical_right;
         }
 
-        let (res_left, res_right) = self.resonance.render(self.sustain_pedal_down);
-        frame_left += res_left * config.resonance_gain;
-        frame_right += res_right * config.resonance_gain;
-
-        self.output_stage.process(
-            frame_left,
-            frame_right,
+        let bridge_frame = self.bridge.process(
+            strings_left,
+            strings_right,
+            mechanical_left,
+            mechanical_right,
+            bridge_drive,
+            self.sustain_pedal_lift,
+            config.resonance_gain,
             config.body_gain,
             config.ambience_gain,
-        )
+        );
+        self.bridge_reflection = bridge_frame.reflected_string_force;
+        self.bridge_energy = bridge_frame.stored_energy;
+
+        (bridge_frame.left, bridge_frame.right)
     }
 
     pub(super) fn active_voice_count(&self) -> usize {
@@ -134,5 +171,9 @@ impl PianoModel {
             })
             .expect("engine always has at least one voice");
         (index, Some(voice.activity()))
+    }
+
+    fn sustain_pedal_is_down(&self) -> bool {
+        self.sustain_pedal_lift >= 0.5
     }
 }

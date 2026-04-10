@@ -1,15 +1,16 @@
 use core::fmt;
 
+mod piano_bridge;
+mod piano_damper;
 mod piano_hammer;
 mod piano_model;
-mod piano_output;
-mod piano_resonance;
+mod piano_physics;
 mod piano_strings;
 mod piano_voice;
 
 use piano_model::PianoModel;
-use piano_output::soft_clip;
 use piano_strings::DcBlocker;
+use vb_piano_physics::soft_clip;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EngineConfig {
@@ -20,10 +21,16 @@ pub struct EngineConfig {
     pub string_gain: f32,
     pub mechanical_gain: f32,
     pub sustain_pedal_threshold: u8,
+    pub sustain_pedal_mode: SustainPedalMode,
+    pub hammer_hardness: f32,
     pub hammer_noise_gain: f32,
     pub resonance_gain: f32,
     pub body_gain: f32,
     pub ambience_gain: f32,
+    pub bridge_feedback_gain: f32,
+    pub downbearing_preload: f32,
+    pub plate_leak: f32,
+    pub soundboard_width: f32,
 }
 
 impl Default for EngineConfig {
@@ -36,10 +43,16 @@ impl Default for EngineConfig {
             string_gain: 1.25,
             mechanical_gain: 0.24,
             sustain_pedal_threshold: 64,
+            sustain_pedal_mode: SustainPedalMode::Binary,
+            hammer_hardness: 0.0,
             hammer_noise_gain: 0.08,
             resonance_gain: 0.26,
             body_gain: 0.22,
             ambience_gain: 0.14,
+            bridge_feedback_gain: 0.36,
+            downbearing_preload: 0.62,
+            plate_leak: 0.032,
+            soundboard_width: 1.0,
         }
     }
 }
@@ -50,16 +63,27 @@ pub enum SustainPedalState {
     Down,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SustainPedalMode {
+    Binary,
+    Continuous,
+}
+
 /// A host-automatable engine parameter exposed by wrapper layers such as VST3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineParameter {
     MasterGain,
     StringGain,
     MechanicalGain,
+    HammerHardness,
     HammerNoiseGain,
     ResonanceGain,
     BodyGain,
     AmbienceGain,
+    BridgeFeedbackGain,
+    DownbearingPreload,
+    PlateLeak,
+    SoundboardWidth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,10 +180,12 @@ impl Engine {
     }
 
     pub fn note_on(&mut self, note: u8, velocity: u8) {
-        if let Some(stolen_energy) =
-            self.piano
-                .note_on(note, velocity.max(1), self.config.sample_rate_hz)
-        {
+        if let Some(stolen_energy) = self.piano.note_on(
+            note,
+            velocity.max(1),
+            self.config.sample_rate_hz,
+            self.config.hammer_hardness,
+        ) {
             self.voice_steals += 1;
             self.worst_stolen_activity = self.worst_stolen_activity.max(stolen_energy);
         }
@@ -176,9 +202,21 @@ impl Engine {
             SustainPedalState::Up
         };
 
-        self.piano
-            .set_sustain_pedal(matches!(next_state, SustainPedalState::Down));
+        match self.config.sustain_pedal_mode {
+            SustainPedalMode::Binary => self
+                .piano
+                .set_sustain_pedal(matches!(next_state, SustainPedalState::Down)),
+            SustainPedalMode::Continuous => {
+                self.piano.set_sustain_pedal_lift(value as f32 / 127.0);
+            }
+        }
         next_state
+    }
+
+    pub fn set_sustain_pedal_amount(&mut self, amount: f32) -> f32 {
+        let amount = amount.clamp(0.0, 1.0);
+        self.piano.set_sustain_pedal_lift(amount);
+        amount
     }
 
     pub fn set_soft_pedal(&mut self, value: u8) -> f32 {
@@ -202,6 +240,11 @@ impl Engine {
         self.config.mechanical_gain
     }
 
+    pub fn set_hammer_hardness(&mut self, value: f32) -> f32 {
+        self.config.hammer_hardness = value.clamp(-1.0, 1.0);
+        self.config.hammer_hardness
+    }
+
     pub fn set_hammer_noise_gain(&mut self, value: f32) -> f32 {
         self.config.hammer_noise_gain = value.clamp(0.0, 1.0);
         self.config.hammer_noise_gain
@@ -222,15 +265,40 @@ impl Engine {
         self.config.ambience_gain
     }
 
+    pub fn set_bridge_feedback_gain(&mut self, value: f32) -> f32 {
+        self.config.bridge_feedback_gain = value.clamp(0.0, 1.5);
+        self.config.bridge_feedback_gain
+    }
+
+    pub fn set_downbearing_preload(&mut self, value: f32) -> f32 {
+        self.config.downbearing_preload = value.clamp(0.0, 1.0);
+        self.config.downbearing_preload
+    }
+
+    pub fn set_plate_leak(&mut self, value: f32) -> f32 {
+        self.config.plate_leak = value.clamp(0.0, 0.30);
+        self.config.plate_leak
+    }
+
+    pub fn set_soundboard_width(&mut self, value: f32) -> f32 {
+        self.config.soundboard_width = value.clamp(0.0, 2.0);
+        self.config.soundboard_width
+    }
+
     pub fn set_parameter(&mut self, parameter: EngineParameter, value: f32) -> f32 {
         match parameter {
             EngineParameter::MasterGain => self.set_master_gain(value),
             EngineParameter::StringGain => self.set_string_gain(value),
             EngineParameter::MechanicalGain => self.set_mechanical_gain(value),
+            EngineParameter::HammerHardness => self.set_hammer_hardness(value),
             EngineParameter::HammerNoiseGain => self.set_hammer_noise_gain(value),
             EngineParameter::ResonanceGain => self.set_resonance_gain(value),
             EngineParameter::BodyGain => self.set_body_gain(value),
             EngineParameter::AmbienceGain => self.set_ambience_gain(value),
+            EngineParameter::BridgeFeedbackGain => self.set_bridge_feedback_gain(value),
+            EngineParameter::DownbearingPreload => self.set_downbearing_preload(value),
+            EngineParameter::PlateLeak => self.set_plate_leak(value),
+            EngineParameter::SoundboardWidth => self.set_soundboard_width(value),
         }
     }
 
@@ -334,6 +402,9 @@ fn validate_config(config: EngineConfig) -> Result<(), EngineError> {
     if !config.mechanical_gain.is_finite() || config.mechanical_gain < 0.0 {
         return Err(EngineError::InvalidConfig("mechanical_gain"));
     }
+    if !config.hammer_hardness.is_finite() {
+        return Err(EngineError::InvalidConfig("hammer_hardness"));
+    }
     if !config.hammer_noise_gain.is_finite() || config.hammer_noise_gain < 0.0 {
         return Err(EngineError::InvalidConfig("hammer_noise_gain"));
     }
@@ -345,6 +416,18 @@ fn validate_config(config: EngineConfig) -> Result<(), EngineError> {
     }
     if !config.ambience_gain.is_finite() || config.ambience_gain < 0.0 {
         return Err(EngineError::InvalidConfig("ambience_gain"));
+    }
+    if !config.bridge_feedback_gain.is_finite() || config.bridge_feedback_gain < 0.0 {
+        return Err(EngineError::InvalidConfig("bridge_feedback_gain"));
+    }
+    if !config.downbearing_preload.is_finite() || config.downbearing_preload < 0.0 {
+        return Err(EngineError::InvalidConfig("downbearing_preload"));
+    }
+    if !config.plate_leak.is_finite() || config.plate_leak < 0.0 {
+        return Err(EngineError::InvalidConfig("plate_leak"));
+    }
+    if !config.soundboard_width.is_finite() || config.soundboard_width < 0.0 {
+        return Err(EngineError::InvalidConfig("soundboard_width"));
     }
 
     Ok(())

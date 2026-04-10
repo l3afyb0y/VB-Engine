@@ -1,5 +1,5 @@
 [workspace]
-members = ["plugins/vst3"]
+members = ["plugins/vst3", "crates/vb-piano-physics"]
 
 [package]
 name = "vb-engine"
@@ -20,6 +20,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [dependencies]
 alsa = { version = "0.10", optional = true }
 sdl2 = { version = "0.38", optional = true }
+vb-piano-physics = { path = "crates/vb-piano-physics" }
 
 [[bin]]
 name = "piano_tester"

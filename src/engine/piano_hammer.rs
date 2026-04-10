@@ -1,3 +1,5 @@
+use super::piano_physics::NotePhysics;
+
 const CONTACT_OVERSAMPLE: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
@@ -9,10 +11,10 @@ pub(super) struct StrikeProfile {
 
 impl StrikeProfile {
     pub(super) fn from_note(note: u8, velocity: u8, soft_pedal_amount: f32) -> Self {
+        let note_physics = NotePhysics::for_note(note);
         let normalized_velocity = velocity as f32 / 127.0;
-        let register_position = ((note as f32 - 21.0).max(0.0) / 87.0).clamp(0.0, 1.0);
         let soft_pedal_amount = soft_pedal_amount.clamp(0.0, 1.0);
-        let register_output_scale = 0.82 - (register_position * 0.10);
+        let register_output_scale = 0.80 - (note_physics.register_position * 0.08);
 
         Self {
             initial_activity: (0.015 + (normalized_velocity.powf(1.20) * 0.30))
@@ -30,6 +32,7 @@ pub(super) struct HammerFrame {
     pub(super) harmonic_brightness: f32,
     pub(super) excitation_drive: f32,
     pub(super) string_transfer: f32,
+    pub(super) structural_launch: f32,
     pub(super) impact_emphasis: f32,
     pub(super) contact_damping: f32,
     pub(super) direct_impulse: f32,
@@ -44,6 +47,7 @@ pub(super) struct HammerModel {
     spring_stiffness: f32,
     compression_power: f32,
     hysteresis: f32,
+    felt_hardness: f32,
     impedance_inverse: f32,
     bridge_coupling: f32,
     contact_position: f32,
@@ -78,6 +82,7 @@ impl Default for HammerModel {
             spring_stiffness: 0.0,
             compression_power: 0.0,
             hysteresis: 0.0,
+            felt_hardness: 0.0,
             impedance_inverse: 0.0,
             bridge_coupling: 0.0,
             contact_position: 0.0,
@@ -113,46 +118,43 @@ impl HammerModel {
         velocity: u8,
         sample_rate_hz: u32,
         soft_pedal_amount: f32,
+        hammer_hardness: f32,
     ) {
         let normalized_velocity = velocity as f32 / 127.0;
-        let register_position = ((note as f32 - 21.0).max(0.0) / 87.0).clamp(0.0, 1.0);
+        let note_physics = NotePhysics::for_note(note);
+        let register_position = note_physics.register_position;
         let soft_pedal_amount = soft_pedal_amount.clamp(0.0, 1.0);
-
-        let hammer_mass =
-            (0.009 + ((1.0 - register_position) * 0.006)) * (1.0 + (0.12 * soft_pedal_amount));
-        let impact_velocity =
-            (0.34 + (normalized_velocity * 2.45)) * (1.0 - (0.35 * soft_pedal_amount));
+        let hammer = note_physics.hammer_physics(velocity, soft_pedal_amount, hammer_hardness);
 
         self.dt = 1.0 / (sample_rate_hz as f32 * CONTACT_OVERSAMPLE as f32);
-        self.mass_inverse = 1.0 / hammer_mass.max(1.0e-5);
-        self.spring_stiffness =
-            3_000.0 + (normalized_velocity * 5_800.0) + ((1.0 - register_position) * 2_400.0);
-        self.compression_power = 2.15 + (register_position * 0.75);
-        self.hysteresis = 0.18 + (normalized_velocity * 0.10);
-        self.impedance_inverse = 0.0028 + ((1.0 - register_position) * 0.0020);
-        self.bridge_coupling = 0.0015 + ((1.0 - register_position) * 0.0022);
+        self.mass_inverse = 1.0 / hammer.mass_kg.max(1.0e-5);
+        self.spring_stiffness = hammer.spring_stiffness;
+        self.compression_power = hammer.compression_power;
+        self.hysteresis = hammer.hysteresis;
+        self.felt_hardness = hammer.felt_hardness;
+        self.impedance_inverse = hammer.impedance_inverse;
+        self.bridge_coupling = hammer.bridge_coupling;
         self.contact_position = 0.0;
-        self.contact_velocity = impact_velocity;
+        self.contact_velocity = hammer.impact_velocity_m_s;
         self.contact_acceleration = 0.0;
         self.contact_force = 0.0;
         self.previous_compression_shape = 0.0;
-        self.strike_brightness_bias =
-            normalized_velocity.powf(1.35) * (1.0 - (0.70 * soft_pedal_amount));
+        self.strike_brightness_bias = hammer.felt_hardness.powf(1.15);
         self.impact_pulse =
-            (0.04 + (normalized_velocity.powf(1.90) * 0.46)) * (1.0 - (0.66 * soft_pedal_amount));
+            (0.05 + (normalized_velocity.powf(1.80) * 0.42)) * (1.0 - (0.58 * soft_pedal_amount));
         self.impact_pulse_decay =
-            (0.78 - (normalized_velocity * 0.10) + (register_position * 0.03)).clamp(0.52, 0.86);
+            (0.80 - (normalized_velocity * 0.08) + (register_position * 0.02)).clamp(0.58, 0.88);
         self.chatter_amount = normalized_velocity.powf(1.4)
-            * (0.08 + (register_position * 0.03))
+            * (0.04 + (register_position * 0.02))
             * (1.0 - (0.55 * soft_pedal_amount));
         self.chatter_decay = (0.81 - (normalized_velocity * 0.08)).clamp(0.62, 0.88);
         self.chatter_phase = 0.0;
         self.chatter_phase_step = 1.35 + (register_position * 0.35);
         self.residual_bloom =
-            (0.05 + (normalized_velocity.powf(1.25) * 0.34)) * (1.0 - (0.58 * soft_pedal_amount));
-        self.bloom_decay = 0.969 - (normalized_velocity * 0.016);
-        self.attack_noise = (0.005 + (normalized_velocity.powf(1.7) * 0.075))
-            * (0.22 + (register_position * 0.10))
+            (0.06 + (normalized_velocity.powf(1.25) * 0.30)) * (1.0 - (0.52 * soft_pedal_amount));
+        self.bloom_decay = 0.974 - (normalized_velocity * 0.012);
+        self.attack_noise = (0.004 + (normalized_velocity.powf(1.6) * 0.055))
+            * (0.24 + (register_position * 0.10))
             * (1.0 - (0.72 * soft_pedal_amount));
         self.attack_noise_decay = 0.44 + (register_position * 0.05);
         self.noise_state =
@@ -208,20 +210,25 @@ impl HammerModel {
         };
 
         let frame = HammerFrame {
-            harmonic_brightness: (self.strike_brightness_bias * 0.26)
-                + (self.residual_bloom * 0.82)
-                + (dynamic_bloom * 0.70)
-                + (self.impact_pulse * 0.08),
-            // Resonator drive uses only the short-lived contact force and
-            // impact pulse.  Bloom terms modulate brightness (above), not
-            // the resonator drive signal, to avoid sustained DC injection
-            // into the high-DC-gain string resonators.
-            excitation_drive: (self.contact_force * 0.00012) + contact_velocity_drive,
-            string_transfer: self.impact_pulse * (0.14 + (self.strike_brightness_bias * 0.36)),
-            impact_emphasis: self.impact_pulse * (0.06 + (self.strike_brightness_bias * 0.40)),
-            contact_damping: (dynamic_bloom * 0.05 + self.impact_pulse * 0.08).clamp(0.0, 0.30),
-            direct_impulse: (self.impact_pulse * (self.strike_brightness_bias * 0.02))
-                + (chatter * 0.004),
+            harmonic_brightness: (self.felt_hardness * 0.20)
+                + (self.strike_brightness_bias * 0.18)
+                + (self.residual_bloom * 0.68)
+                + (dynamic_bloom * 0.56)
+                + (self.impact_pulse * 0.06),
+            // Resonator drive keeps the true contact terms, but also gets a
+            // short impact-pulse contribution so harder strikes actually light
+            // up the string core instead of routing almost everything through
+            // the structural/body path.
+            excitation_drive: (self.contact_force * 0.00016)
+                + contact_velocity_drive
+                + (self.impact_pulse * (0.0008 + (self.felt_hardness * 0.0012))),
+            string_transfer: self.impact_pulse * (0.18 + (self.felt_hardness * 0.22)),
+            structural_launch: (self.contact_force * 0.00008)
+                + (self.impact_pulse * 0.05)
+                + (self.residual_bloom * 0.03),
+            impact_emphasis: self.impact_pulse * (0.035 + (self.felt_hardness * 0.18)),
+            contact_damping: (dynamic_bloom * 0.035 + self.impact_pulse * 0.045).clamp(0.0, 0.22),
+            direct_impulse: (self.impact_pulse * (self.felt_hardness * 0.006)) + (chatter * 0.0018),
             attack_left: attack_noise * (0.72 - (pan * 0.14)),
             attack_right: attack_noise * (0.72 + (pan * 0.14)),
         };
@@ -307,20 +314,31 @@ mod tests {
     fn louder_strike_generates_more_initial_brightness() {
         let mut soft = HammerModel::default();
         let mut loud = HammerModel::default();
-        soft.start(60, 32, 48_000, 0.0);
-        loud.start(60, 120, 48_000, 0.0);
+        soft.start(60, 32, 48_000, 0.0, 0.0);
+        loud.start(60, 120, 48_000, 0.0, 0.0);
 
-        let soft_frame = soft.step(0.0, 1.0, 0.0);
-        let loud_frame = loud.step(0.0, 1.0, 0.0);
+        let mut soft_peak_brightness: f32 = 0.0;
+        let mut loud_peak_brightness: f32 = 0.0;
+        let mut soft_peak_drive: f32 = 0.0;
+        let mut loud_peak_drive: f32 = 0.0;
 
-        assert!(loud_frame.harmonic_brightness > soft_frame.harmonic_brightness);
-        assert!(loud_frame.excitation_drive > soft_frame.excitation_drive);
+        for _ in 0..16 {
+            let soft_frame = soft.step(0.0, 1.0, 0.0);
+            let loud_frame = loud.step(0.0, 1.0, 0.0);
+            soft_peak_brightness = soft_peak_brightness.max(soft_frame.harmonic_brightness);
+            loud_peak_brightness = loud_peak_brightness.max(loud_frame.harmonic_brightness);
+            soft_peak_drive = soft_peak_drive.max(soft_frame.excitation_drive.abs());
+            loud_peak_drive = loud_peak_drive.max(loud_frame.excitation_drive.abs());
+        }
+
+        assert!(loud_peak_brightness > soft_peak_brightness);
+        assert!(loud_peak_drive > soft_peak_drive);
     }
 
     #[test]
     fn hammer_contact_eventually_escapes() {
         let mut hammer = HammerModel::default();
-        hammer.start(60, 100, 48_000, 0.0);
+        hammer.start(60, 100, 48_000, 0.0, 0.0);
 
         let mut last_frame = super::HammerFrame::default();
         for _ in 0..4096 {

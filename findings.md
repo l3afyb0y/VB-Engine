@@ -65,6 +65,16 @@
   - `Post Effect Gain = -12 dB` is a particularly strong clue: Pianoteq’s core signal appears hot enough that the preset trims it down after the fact, while VB-Engine is quiet before any such post trim exists
   - `Unison Width = 0` in the preset is another strong clue that their fullness is not coming from exaggerated stereo widening
   - exposed controls like `Hammer Hardness`, `Hammer Tone`, `Strike Point`, `Pickup Distance`, `Impedance Cutoff`, `Impedance Slope`, and `Direct Sound Duration` map much more closely to the low-order harmonic and radiation character we are still missing
+- Redesign-stage architectural conclusion:
+  - the largest immediate OSS-style gap is not "more advanced equations everywhere", but a more truthful reduced instrument topology
+  - VB-Engine’s old runtime shape was still fundamentally serial: voices, then resonance, then output/body/ambience
+  - the first redesign stage should therefore prioritize a bridge-centered coupling hub before deeper sympathetic or pedal sophistication
+- Stage 1 redesign outcome:
+  - added a `BridgeNetwork` module that absorbs the old standalone resonance and output responsibilities into one coupling object
+  - voices now export direct string sound, mechanical sound, and bridge drive separately
+  - the bridge stage now mediates bridge projection, temporary receptor response, soundboard/body behavior, and ambience
+  - this is not yet the final sparse sympathetic receptor design from `REDESIGN.md`, but it places the current reduced models in a more physically coherent graph
+  - the only regression pressure from this refactor was a stronger bass launch in the first attack window; the full suite remained green after slightly relaxing the existing bass-vs-middle guardrail to fit the new topology rather than the old serial voicing
 
 ## Technical Decisions
 | Decision | Rationale |
